@@ -1,17 +1,63 @@
 import os
 import json
+import hashlib
+import time
 import requests
-from flask import Flask, request, render_template, Response
+from flask import Flask, request, render_template, Response, session, redirect, url_for
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
+# 配置 Session
+app.secret_key = os.getenv('SECRET_KEY', os.urandom(32).hex())
+
 # 配置
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx'}
 BLOB_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN')
+PIN_HASH = os.getenv('PIN_HASH')  # 存储的是 SHA256 哈希值
 
 # Vercel Blob Storage API 端点
 BLOB_API_URL = "https://blob.vercel-storage.com"
+
+# 登录尝试限制（内存存储，重启后重置）
+login_attempts = {}
+MAX_ATTEMPTS = 5
+LOCKOUT_TIME = 300  # 5分钟锁定时间
+
+def get_client_ip():
+    """获取客户端 IP 地址"""
+    if request.headers.getlist("X-Forwarded-For"):
+        return request.headers.getlist("X-Forwarded-For")[0]
+    return request.remote_addr
+
+def is_ip_locked(ip):
+    """检查 IP 是否被锁定"""
+    if ip in login_attempts:
+        attempts = login_attempts[ip]
+        if attempts['count'] >= MAX_ATTEMPTS:
+            if time.time() - attempts['last_attempt'] < LOCKOUT_TIME:
+                return True
+            else:
+                # 锁定时间已过，重置计数器
+                login_attempts[ip] = {'count': 0, 'last_attempt': 0}
+    return False
+
+def record_failed_attempt(ip):
+    """记录失败的登录尝试"""
+    if ip not in login_attempts:
+        login_attempts[ip] = {'count': 0, 'last_attempt': 0}
+    
+    login_attempts[ip]['count'] += 1
+    login_attempts[ip]['last_attempt'] = time.time()
+
+def verify_pin(pin):
+    """验证 PIN 码"""
+    if not PIN_HASH:
+        return False
+    
+    # 计算 PIN 的 SHA256 哈希值
+    pin_hash = hashlib.sha256(pin.encode()).hexdigest()
+    return pin_hash == PIN_HASH
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -59,9 +105,60 @@ def index():
             
     return render_template('index.html')
 
+# --- 路由：PIN 验证 ---
+@app.route('/teacher/verify', methods=['GET', 'POST'])
+def verify_pin():
+    ip = get_client_ip()
+    
+    # 检查 IP 是否被锁定
+    if is_ip_locked(ip):
+        remaining_time = int(LOCKOUT_TIME - (time.time() - login_attempts[ip]['last_attempt']))
+        return render_template('pin_verify.html', 
+                             error=f'登录尝试次数过多，请 {remaining_time} 秒后再试',
+                             locked=True)
+    
+    if request.method == 'POST':
+        pin = request.form.get('pin', '')
+        
+        if verify_pin(pin):
+            # 验证成功，清除该 IP 的失败记录
+            if ip in login_attempts:
+                del login_attempts[ip]
+            
+            # 设置 session
+            session['authenticated'] = True
+            session['auth_time'] = time.time()
+            
+            return redirect(url_for('teacher'))
+        else:
+            # 验证失败，记录尝试
+            record_failed_attempt(ip)
+            attempts_left = MAX_ATTEMPTS - login_attempts[ip]['count']
+            
+            if attempts_left <= 0:
+                return render_template('pin_verify.html', 
+                                     error='登录尝试次数过多，请 5 分钟后再试',
+                                     locked=True)
+            else:
+                return render_template('pin_verify.html', 
+                                     error=f'PIN 错误，剩余尝试次数: {attempts_left}')
+    
+    # GET 请求，显示验证页面
+    return render_template('pin_verify.html')
+
 # --- 路由：老师 (查看) ---
 @app.route('/teacher')
 def teacher():
+    # 检查是否已验证
+    if not session.get('authenticated'):
+        return redirect(url_for('verify_pin'))
+    
+    # 检查 session 是否过期（30分钟）
+    auth_time = session.get('auth_time', 0)
+    if time.time() - auth_time > 1800:  # 30分钟
+        session.clear()
+        return redirect(url_for('verify_pin'))
+    
     try:
         headers = {
             'Authorization': f'Bearer {BLOB_TOKEN}'
@@ -118,6 +215,12 @@ def teacher():
             
     except Exception as e:
         return f'获取文件列表失败: {str(e)}'
+
+# --- 路由：退出登录 ---
+@app.route('/teacher/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('verify_pin'))
 
 # --- 路由：下载/预览文件 ---
 @app.route('/uploads/<filename>')
