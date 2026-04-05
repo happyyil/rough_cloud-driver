@@ -9,9 +9,6 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# 配置子路径（可选，根据 Vercel 配置调整）
-app.config['APPLICATION_ROOT'] = '/clouddriver'
-
 # 配置
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx'}
 BLOB_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN')
