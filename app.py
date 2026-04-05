@@ -53,8 +53,10 @@ def record_failed_attempt(ip):
 def check_pin(pin):
     """验证 PIN 码"""
     if not PIN_HASH:
-        return False
-    
+        # 如果没有设置 PIN_HASH，打印警告并允许任何 PIN 通过（仅用于开发/测试）
+        print("警告：未设置 PIN_HASH 环境变量！任何人都可访问 /teacher 页面。请在 Vercel 环境变量中设置 PIN_HASH。")
+        return True
+
     # 计算 PIN 的 SHA256 哈希值
     pin_hash = hashlib.sha256(pin.encode()).hexdigest()
     return pin_hash == PIN_HASH
