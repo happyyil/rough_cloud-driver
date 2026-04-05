@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>文件上传系统</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 50px; }
+        input[type="file"] { margin: 20px 0; }
+        button { padding: 10px 20px; background: #007BFF; color: white; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <h1>文件上传</h1>
+    <p>请选择文件并上传</p>
+    
+    <form method="post" enctype="multipart/form-data">
+        <input type="file" name="file" required>
+        <br>
+        <button type="submit">立即上传</button>
+    </form>
+    
+    <p><small><a href="{{ url_for('teacher') }}">我是老师，我要查看文件</a></small></p>
+</body>
+</html>

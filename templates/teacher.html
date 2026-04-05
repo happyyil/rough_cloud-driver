@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>查看文件</title>
+    <style>
+        body { font-family: sans-serif; padding: 50px; }
+        h1 { color: #333; }
+        ul { list-style-type: none; padding: 0; }
+        li { background: #f4f4f4; margin: 10px 0; padding: 15px; border-radius: 5px; }
+        a { text-decoration: none; color: #007BFF; font-weight: bold; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>查看后台</h1>
+    <p>以下是用户上传的所有文件：</p>
+    
+    <ul>
+        {% for file in files %}
+            <li>
+                <!-- 点击文件名可以直接下载或预览 -->
+                <a href="{{ url_for('uploaded_file', filename=file) }}" target="_blank">
+                    {{ file }}
+                </a>
+            </li>
+        {% else %}
+            <li>目前还没有人上传文件。</li>
+        {% endfor %}
+    </ul>
+    
+    <p><a href="{{ url_for('index') }}">← 返回上传页面</a></p>
+</body>
+</html>
