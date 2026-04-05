@@ -50,7 +50,7 @@ def record_failed_attempt(ip):
     login_attempts[ip]['count'] += 1
     login_attempts[ip]['last_attempt'] = time.time()
 
-def verify_pin(pin):
+def check_pin(pin):
     """验证 PIN 码"""
     if not PIN_HASH:
         return False
@@ -113,36 +113,36 @@ def verify_pin():
     # 检查 IP 是否被锁定
     if is_ip_locked(ip):
         remaining_time = int(LOCKOUT_TIME - (time.time() - login_attempts[ip]['last_attempt']))
-        return render_template('pin_verify.html', 
+        return render_template('pin_verify.html',
                              error=f'登录尝试次数过多，请 {remaining_time} 秒后再试',
                              locked=True)
-    
+
     if request.method == 'POST':
         pin = request.form.get('pin', '')
-        
-        if verify_pin(pin):
+
+        if check_pin(pin):
             # 验证成功，清除该 IP 的失败记录
             if ip in login_attempts:
                 del login_attempts[ip]
-            
+
             # 设置 session
             session['authenticated'] = True
             session['auth_time'] = time.time()
-            
+
             return redirect(url_for('teacher'))
         else:
             # 验证失败，记录尝试
             record_failed_attempt(ip)
             attempts_left = MAX_ATTEMPTS - login_attempts[ip]['count']
-            
+
             if attempts_left <= 0:
-                return render_template('pin_verify.html', 
+                return render_template('pin_verify.html',
                                      error='登录尝试次数过多，请 5 分钟后再试',
                                      locked=True)
             else:
-                return render_template('pin_verify.html', 
+                return render_template('pin_verify.html',
                                      error=f'PIN 错误，剩余尝试次数: {attempts_left}')
-    
+
     # GET 请求，显示验证页面
     return render_template('pin_verify.html')
 
