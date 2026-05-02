@@ -38,9 +38,8 @@
     <ul>
         {% for file in files %}
             <li>
-                <!-- 点击文件名可以直接下载或预览 -->
-                <a href="{{ url_for('uploaded_file', filename=file) }}" target="_blank">
-                    {{ file }}
+                <a href="{{ url_for('download_file', url=file.url) }}" target="_blank">
+                    {{ file.name }}
                 </a>
             </li>
         {% else %}

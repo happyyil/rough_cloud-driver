@@ -78,23 +78,28 @@ def index():
         
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
+            # secure_filename 会丢失中文字符，此时只保留扩展名，加时间戳作文件名
+            name, ext = os.path.splitext(filename)
+            if not name:
+                name = str(int(time.time()))
+            filename = f'{name}{ext}'
+
             file_content = file.read()
             
-            # 上传到 Blob Storage
+            # 上传到 Vercel Blob Storage
             try:
                 headers = {
                     'Authorization': f'Bearer {BLOB_TOKEN}',
                     'Content-Type': file.content_type or 'application/octet-stream'
                 }
                 
+                # pathname 为 uploads/{filename}，addRandomSuffix 防止同名冲突
                 response = requests.put(
                     f'{BLOB_API_URL}/uploads/{filename}',
+                    params={'addRandomSuffix': 'true'},
                     data=file_content,
                     headers=headers
                 )
-                
-                print(f"Upload response status: {response.status_code}")
-                print(f"Upload response body: {response.text}")
                 
                 if response.status_code in [200, 201]:
                     return '文件上传成功！<br><a href="/">继续上传</a>'
@@ -102,7 +107,6 @@ def index():
                     return f'上传失败 (HTTP {response.status_code}): {response.text}'
                     
             except Exception as e:
-                print(f"Upload error: {str(e)}")
                 return f'上传失败: {str(e)}'
             
     return render_template('index.html')
@@ -168,50 +172,28 @@ def teacher():
         
         # 列出 Blob Storage 中的文件
         response = requests.get(
-            f'{BLOB_API_URL}?prefix=uploads/',
+            BLOB_API_URL,
+            params={'prefix': 'uploads/'},
             headers=headers
         )
         
         if response.status_code == 200:
             data = response.json()
             
-            # 打印调试信息，查看实际的数据结构
-            print(f"Blob API response: {json.dumps(data, indent=2)}")
+            # Vercel Blob list API 返回格式: { blobs: [{ pathname, url, size, uploadedAt }], cursor, hasMore }
+            blobs = []
+            for blob in data.get('blobs', []):
+                pathname = blob.get('pathname', '')
+                # 从 pathname 提取显示名（去掉 uploads/ 前缀）
+                display_name = pathname.replace('uploads/', '', 1) if pathname.startswith('uploads/') else pathname
+                blobs.append({
+                    'name': display_name,
+                    'url': blob.get('url', ''),
+                    'size': blob.get('size', 0),
+                    'uploaded_at': blob.get('uploadedAt', '')
+                })
             
-            # 尝试多种可能的字段名
-            files = []
-            if 'blobs' in data:
-                for blob in data['blobs']:
-                    # 尝试获取文件名
-                    if 'name' in blob:
-                        filename = blob['name']
-                    elif 'path' in blob:
-                        filename = blob['path']
-                    elif 'url' in blob:
-                        filename = blob['url'].split('/')[-1]
-                    elif isinstance(blob, str):
-                        filename = blob
-                    else:
-                        filename = str(blob)
-                    
-                    # 移除 uploads/ 前缀
-                    if filename.startswith('uploads/'):
-                        filename = filename.replace('uploads/', '')
-                    files.append(filename)
-            elif isinstance(data, list):
-                # 如果直接返回数组
-                for blob in data:
-                    if isinstance(blob, dict):
-                        filename = blob.get('name', blob.get('path', blob.get('url', str(blob))))
-                        if filename.startswith('uploads/'):
-                            filename = filename.replace('uploads/', '')
-                        files.append(filename)
-                    else:
-                        files.append(str(blob))
-            else:
-                files = [str(data)]
-            
-            return render_template('teacher.html', files=files)
+            return render_template('teacher.html', files=blobs)
         else:
             return f'获取文件列表失败 (HTTP {response.status_code}): {response.text}'
             
@@ -224,34 +206,39 @@ def logout():
     session.clear()
     return redirect(url_for('verify_pin'))
 
-# --- 路由：下载/预览文件 ---
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
+# --- 路由：下载文件 ---
+# 必须使用 blob 的实际 URL（从 list API 获取），不能用路径拼接
+# 因为 GET https://blob.vercel-storage.com/uploads/{filename} 不是有效的下载端点
+@app.route('/download')
+def download_file():
+    blob_url = request.args.get('url', '')
+    if not blob_url:
+        return '缺少文件 URL', 400
+    
     try:
-        headers = {
-            'Authorization': f'Bearer {BLOB_TOKEN}'
-        }
-        
-        response = requests.get(
-            f'{BLOB_API_URL}/uploads/{filename}',
-            headers=headers
-        )
-        
-        print(f"Download response status: {response.status_code}")
-        print(f"Download response headers: {dict(response.headers)}")
+        headers = {'Authorization': f'Bearer {BLOB_TOKEN}'}
+        response = requests.get(blob_url, headers=headers, stream=True)
         
         if response.status_code == 200:
-            file_data = response.content
-            file_response = Response(file_data)
+            # 从 Content-Disposition 或 URL 提取文件名
+            filename = ''
+            content_disp = response.headers.get('Content-Disposition', '')
+            if 'filename=' in content_disp:
+                filename = content_disp.split('filename=')[-1].strip('"\'')
+            if not filename:
+                filename = blob_url.split('/')[-1].split('?')[0]
+            
+            file_response = Response(
+                response.iter_content(chunk_size=8192),
+                content_type=response.headers.get('Content-Type', 'application/octet-stream')
+            )
             file_response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-            file_response.headers['Content-Type'] = response.headers.get('Content-Type', 'application/octet-stream')
             return file_response
         else:
-            return f'文件不存在 (HTTP {response.status_code}): {response.text}'
+            return f'文件不存在 (HTTP {response.status_code})', 404
             
     except Exception as e:
-        print(f"Download error: {str(e)}")
-        return f'文件不存在: {str(e)}'
+        return f'文件下载失败: {str(e)}', 500
 
 # Vercel Serverless Function 入口点
 if __name__ == '__main__':
