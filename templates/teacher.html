@@ -38,7 +38,7 @@
     <ul>
         {% for file in files %}
             <li>
-                <a href="{{ url_for('download_file', url=file.url) }}" target="_blank">
+                <a href="{{ url_for('download_file', pathname='uploads/' + file.name) }}" target="_blank">
                     {{ file.name }}
                 </a>
             </li>

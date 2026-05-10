@@ -207,36 +207,48 @@ def logout():
     return redirect(url_for('verify_pin'))
 
 # --- 路由：下载文件 ---
-# 必须使用 blob 的实际 URL（从 list API 获取），不能用路径拼接
-# 因为 GET https://blob.vercel-storage.com/uploads/{filename} 不是有效的下载端点
-@app.route('/download')
-def download_file():
-    blob_url = request.args.get('url', '')
-    if not blob_url:
-        return '缺少文件 URL', 400
-    
+# 使用 pathname 生成短链接（/d/uploads/filename），便于分享
+# 服务端通过 Vercel Blob API 查找对应的 blob URL 再代理下载
+@app.route('/d/<path:pathname>')
+def download_file(pathname):
+    if not pathname:
+        return '缺少文件路径', 400
+
     try:
         headers = {'Authorization': f'Bearer {BLOB_TOKEN}'}
-        response = requests.get(blob_url, headers=headers, stream=True)
-        
-        if response.status_code == 200:
-            # 从 Content-Disposition 或 URL 提取文件名
-            filename = ''
-            content_disp = response.headers.get('Content-Disposition', '')
-            if 'filename=' in content_disp:
-                filename = content_disp.split('filename=')[-1].strip('"\'')
-            if not filename:
-                filename = blob_url.split('/')[-1].split('?')[0]
-            
+
+        # 通过 prefix 精确查找该文件
+        response = requests.get(
+            BLOB_API_URL,
+            params={'prefix': pathname},
+            headers=headers
+        )
+
+        if response.status_code != 200:
+            return f'文件查找失败 (HTTP {response.status_code})', 404
+
+        blobs = response.json().get('blobs', [])
+        # 精确匹配 pathname
+        blob = next((b for b in blobs if b.get('pathname') == pathname), None)
+        if not blob:
+            return '文件不存在', 404
+
+        blob_url = blob.get('url', '')
+
+        # 代理下载
+        dl_response = requests.get(blob_url, headers=headers, stream=True)
+
+        if dl_response.status_code == 200:
+            filename = pathname.replace('uploads/', '', 1) if pathname.startswith('uploads/') else pathname
             file_response = Response(
-                response.iter_content(chunk_size=8192),
-                content_type=response.headers.get('Content-Type', 'application/octet-stream')
+                dl_response.iter_content(chunk_size=8192),
+                content_type=dl_response.headers.get('Content-Type', 'application/octet-stream')
             )
             file_response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
             return file_response
         else:
-            return f'文件不存在 (HTTP {response.status_code})', 404
-            
+            return f'文件下载失败 (HTTP {dl_response.status_code})', 404
+
     except Exception as e:
         return f'文件下载失败: {str(e)}', 500
 
