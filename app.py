@@ -78,11 +78,14 @@ def index():
         
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
-            # secure_filename 会丢失中文字符，此时只保留扩展名，加时间戳作文件名
+            # secure_filename 会丢失中文字符，此时只保留扩展名
             name, ext = os.path.splitext(filename)
+            # 用时间戳保证文件名唯一，避免同名覆盖
+            timestamp = str(int(time.time()))
             if not name:
-                name = str(int(time.time()))
-            filename = f'{name}{ext}'
+                filename = f'{timestamp}{ext}'
+            else:
+                filename = f'{name}-{timestamp}{ext}'
 
             file_content = file.read()
             
@@ -93,10 +96,9 @@ def index():
                     'Content-Type': file.content_type or 'application/octet-stream'
                 }
                 
-                # pathname 为 uploads/{filename}，addRandomSuffix 防止同名冲突
+                # pathname 为 uploads/{filename}，文件名已含时间戳保证唯一
                 response = requests.put(
                     f'{BLOB_API_URL}/uploads/{filename}',
-                    params={'addRandomSuffix': 'true'},
                     data=file_content,
                     headers=headers
                 )

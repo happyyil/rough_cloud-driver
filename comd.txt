@@ -1,0 +1,9 @@
+curl -s -H "Authorization: Bearer YOUR_BLOB_TOKEN" "https://blob.vercel-storage.com?prefix=uploads/" | python -m json.tool
+Invoke-WebRequest : 缺少参数“SessionVariable”的某个参数。请指定一个类型为“System.String”的参数，然后再试一次。
+所在位置 行:1 字符: 6
++ curl -s -H "Authorization: Bearer vercel_blob_rw_MgXlcw5WEKxR8CUR_BpN ...
++      ~~
+    + CategoryInfo          : InvalidArgument: (:) [Invoke-WebRequest]，ParameterBindingException
+    + FullyQualifiedErrorId : MissingArgument,Microsoft.PowerShell.Commands.InvokeWebRequestCommand
+curl.exe -X DELETE -H "Authorization: Bearer vercel_blob_rw_MgXlcw5WEKxR8CUR_BpN3qs7U6l0nJJeyYSsOdCapbQqtEP" -H "Content-Type: application/json" -d '{"urls":["https://mgxlcw5wekxr8cur.public.blob.vercel-storage.com/uploads/1775821099850-WkEjLkYXn1LfnGbVkAVOJ6mBw6XBM3.jpg"]}' "https://blob.vercel-storage.com/delete"
+,"ttps://mgxlcw5wekxr8cur.public.blob.vercel-storage.com/uploads/1775821099850-zIFe2G65oXEyoN9LlMNXaZeJMs7gin.jpg","https://mgxlcw5wekxr8cur.public.blob.vercel-storage.com/uploads/20250123211250-8Qcf7jnsuAZ3DjMxMfgVyihzkgINsA.png","https://mgxlcw5wekxr8cur.public.blob.vercel-storage.com/uploads/zh_hans_content-jqoq06G5AvuRcgTauZPMCxGbWlNgD4.txt"
