@@ -211,27 +211,40 @@ def logout():
 # 服务端通过 Vercel Blob API 查找对应的 blob URL 再代理下载
 @app.route('/d/<path:pathname>')
 def download_file(pathname):
-    if not pathname:
+    # 只允许 uploads/ 前缀的路径，防止访问 uploads 以外的文件
+    if not pathname.startswith('uploads/'):
+        return '无效的文件路径', 400
+    if not pathname or pathname == 'uploads/':
         return '缺少文件路径', 400
 
     try:
         headers = {'Authorization': f'Bearer {BLOB_TOKEN}'}
 
-        # 通过 prefix 精确查找该文件
-        response = requests.get(
-            BLOB_API_URL,
-            params={'prefix': pathname},
-            headers=headers
-        )
+        # 通过 prefix 查找该文件，处理分页
+        cursor = None
+        blob = None
 
-        if response.status_code != 200:
-            return f'文件查找失败 (HTTP {response.status_code})', 404
+        while True:
+            params = {'prefix': pathname}
+            if cursor:
+                params['cursor'] = cursor
 
-        blobs = response.json().get('blobs', [])
-        # 精确匹配 pathname
-        blob = next((b for b in blobs if b.get('pathname') == pathname), None)
-        if not blob:
-            return '文件不存在', 404
+            response = requests.get(BLOB_API_URL, params=params, headers=headers)
+
+            if response.status_code != 200:
+                return f'文件查找失败 (HTTP {response.status_code})', 404
+
+            data = response.json()
+            # 精确匹配 pathname
+            blob = next((b for b in data.get('blobs', []) if b.get('pathname') == pathname), None)
+            if blob:
+                break
+
+            # 没有更多页，文件不存在
+            if not data.get('hasMore'):
+                return '文件不存在', 404
+
+            cursor = data.get('cursor')
 
         blob_url = blob.get('url', '')
 
