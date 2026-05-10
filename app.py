@@ -223,28 +223,35 @@ def download_file(pathname):
         headers = {'Authorization': f'Bearer {BLOB_TOKEN}'}
 
         # 通过 prefix 查找该文件，处理分页
+        # addRandomSuffix 会在内部 key 中插入随机后缀（如 uploads/file-abc.jpg），
+        # 但 pathname 字段不含后缀（uploads/file.jpg），prefix 按内部 key 匹配，
+        # 所以用去掉扩展名的部分做 prefix，再精确匹配 pathname
+        name_part, ext = os.path.splitext(pathname)
+        search_prefix = name_part
+
         cursor = None
         blob = None
 
         while True:
-            params = {'prefix': pathname}
+            params = {'prefix': search_prefix}
             if cursor:
                 params['cursor'] = cursor
 
             response = requests.get(BLOB_API_URL, params=params, headers=headers)
 
             if response.status_code != 200:
-                return f'文件查找失败 (HTTP {response.status_code})', 404
+                return f'文件查找失败 (HTTP {response.status_code}): {response.text}', 404
 
             data = response.json()
+            blobs_in_page = data.get('blobs', [])
             # 精确匹配 pathname
-            blob = next((b for b in data.get('blobs', []) if b.get('pathname') == pathname), None)
+            blob = next((b for b in blobs_in_page if b.get('pathname') == pathname), None)
             if blob:
                 break
 
             # 没有更多页，文件不存在
             if not data.get('hasMore'):
-                return '文件不存在', 404
+                return f'文件不存在', 404
 
             cursor = data.get('cursor')
 

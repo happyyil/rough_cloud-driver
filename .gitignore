@@ -1,3 +1,5 @@
 need.md
 generate_pin_hash.py
 comd.txt
+.vercel
+.env*.local
