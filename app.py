@@ -2,78 +2,121 @@ import os
 import json
 import hashlib
 import time
-import requests
-from flask import Flask, request, render_template, Response, session, redirect, url_for
+import boto3
+from botocore.config import Config
+from flask import Flask, request, render_template, Response, session, redirect, url_for, jsonify
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-
-# 配置 Session
 app.secret_key = os.getenv('SECRET_KEY', os.urandom(32).hex())
 
-# 配置
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx'}
-BLOB_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN')
-PIN_HASH = os.getenv('PIN_HASH')  # 存储的是 SHA256 哈希值
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3'}
+PIN_HASH = os.getenv('PIN_HASH')
 
-# Vercel Blob Storage API 端点
-BLOB_API_URL = "https://blob.vercel-storage.com"
+# Cloudflare R2 配置
+R2_ACCOUNT_ID = os.getenv('R2_ACCOUNT_ID')
+R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
+R2_SECRET_KEY = os.getenv('R2_SECRET_KEY')
+R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME', 'my-uploads')
+R2_PUBLIC_URL = os.getenv('R2_PUBLIC_URL')
 
-# 登录尝试限制（内存存储，重启后重置）
+# 创建 S3 客户端（R2 兼容 S3 API）
+s3_client = None
+if all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_KEY]):
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_KEY,
+        config=Config(signature_version='s3v4')
+    )
+
+# 登录限制
 login_attempts = {}
 MAX_ATTEMPTS = 5
-LOCKOUT_TIME = 300  # 5分钟锁定时间
+LOCKOUT_TIME = 300
 
 def get_client_ip():
-    """获取客户端 IP 地址"""
     if request.headers.getlist("X-Forwarded-For"):
         return request.headers.getlist("X-Forwarded-For")[0]
     return request.remote_addr
 
 def is_ip_locked(ip):
-    """检查 IP 是否被锁定"""
     if ip in login_attempts:
         attempts = login_attempts[ip]
         if attempts['count'] >= MAX_ATTEMPTS:
             if time.time() - attempts['last_attempt'] < LOCKOUT_TIME:
                 return True
             else:
-                # 锁定时间已过，重置计数器
                 login_attempts[ip] = {'count': 0, 'last_attempt': 0}
     return False
 
 def record_failed_attempt(ip):
-    """记录失败的登录尝试"""
     if ip not in login_attempts:
         login_attempts[ip] = {'count': 0, 'last_attempt': 0}
-    
     login_attempts[ip]['count'] += 1
     login_attempts[ip]['last_attempt'] = time.time()
 
 def check_pin(pin):
-    """验证 PIN 码"""
     if not PIN_HASH:
-        # 如果没有设置 PIN_HASH，打印警告并允许任何 PIN 通过（仅用于开发/测试）
-        print("警告：未设置 PIN_HASH 环境变量！任何人都可访问 /teacher 页面。请在 Vercel 环境变量中设置 PIN_HASH。")
+        print("警告：未设置 PIN_HASH 环境变量！")
         return True
-
-    # 计算 PIN 的 SHA256 哈希值
     pin_hash = hashlib.sha256(pin.encode()).hexdigest()
     return pin_hash == PIN_HASH
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# --- 路由：普通用户 (上传) ---
+def get_r2_url(key):
+    """获取 R2 文件的公共 URL"""
+    if R2_PUBLIC_URL:
+        return f'{R2_PUBLIC_URL}/{key}'
+    return f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{R2_BUCKET_NAME}/{key}'
+
+# ========== R2 上传相关 API ==========
+
+@app.route('/api/r2/presign', methods=['POST'])
+def get_presigned_url():
+    """生成预签名上传 URL，客户端用此 URL 直传到 R2"""
+    if not s3_client:
+        return jsonify({'error': 'R2 未配置'}), 500
+    
+    data = request.get_json() or {}
+    filename = data.get('filename', '')
+    
+    if not filename or not allowed_file(filename):
+        return jsonify({'error': '不支持的文件类型'}), 400
+    
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    timestamp = str(int(time.time()))
+    unique_name = f'{timestamp}.{ext}' if ext else timestamp
+    key = f'uploads/{unique_name}'
+    
+    try:
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': R2_BUCKET_NAME,
+                'Key': key,
+                'ContentType': data.get('contentType', 'application/octet-stream')
+            },
+            ExpiresIn=900
+        )
+        
+        return jsonify({
+            'presignedUrl': presigned_url,
+            'publicUrl': get_r2_url(key),
+            'key': key,
+            'filename': unique_name
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ========== 原有路由 ==========
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    """Debugger Content"""
-    print(f"Method: {request.method}")
-    print(f"Content-Type: {request.content_type}")
-    print(f"Files: {list(request.files.keys())}")
-    print(f"Form: {list(request.form.keys())}")
-    print(f"Headers: {dict(request.headers)}")
-    
     if request.method == 'POST':
         if 'file' not in request.files:
             return '没有文件部分'
@@ -83,49 +126,40 @@ def index():
         if file.filename == '':
             return '没有选择文件'
         
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            # secure_filename 会丢失中文字符，此时只保留扩展名
-            name, ext = os.path.splitext(filename)
-            # 用时间戳保证文件名唯一，避免同名覆盖
-            timestamp = str(int(time.time()))
-            if not name:
-                filename = f'{timestamp}{ext}'
-            else:
-                filename = f'{name}-{timestamp}{ext}'
-
-            file_content = file.read()
+        original_filename = file.filename
+        if '.' not in original_filename:
+            return '文件没有扩展名'
+        
+        ext = original_filename.rsplit('.', 1)[1].lower()
+        
+        if ext not in ALLOWED_EXTENSIONS:
+            return f'不支持的文件类型: .{ext}。允许: {", ".join(ALLOWED_EXTENSIONS)}'
+        
+        timestamp = str(int(time.time()))
+        filename = f'{timestamp}.{ext}'
+        key = f'uploads/{filename}'
+        
+        if not s3_client:
+            return 'R2 未配置，请联系管理员', 500
+        
+        try:
+            s3_client.put_object(
+                Bucket=R2_BUCKET_NAME,
+                Key=key,
+                Body=file.read(),
+                ContentType=file.content_type or 'application/octet-stream'
+            )
+            return f'文件上传成功！<br><a href="/">继续上传</a>'
             
-            # 上传到 Vercel Blob Storage
-            try:
-                headers = {
-                    'Authorization': f'Bearer {BLOB_TOKEN}',
-                    'Content-Type': file.content_type or 'application/octet-stream'
-                }
-                
-                # pathname 为 uploads/{filename}，文件名已含时间戳保证唯一
-                response = requests.put(
-                    f'{BLOB_API_URL}/uploads/{filename}',
-                    data=file_content,
-                    headers=headers
-                )
-                
-                if response.status_code in [200, 201]:
-                    return '文件上传成功！<br><a href="/">继续上传</a>'
-                else:
-                    return f'上传失败 (HTTP {response.status_code}): {response.text}'
-                    
-            except Exception as e:
-                return f'上传失败: {str(e)}'
-            
+        except Exception as e:
+            return f'上传失败: {str(e)}'
+    
     return render_template('index.html')
 
-# --- 路由：PIN 验证 ---
 @app.route('/teacher/verify', methods=['GET', 'POST'])
 def verify_pin():
     ip = get_client_ip()
     
-    # 检查 IP 是否被锁定
     if is_ip_locked(ip):
         remaining_time = int(LOCKOUT_TIME - (time.time() - login_attempts[ip]['last_attempt']))
         return render_template('pin_verify.html',
@@ -136,17 +170,14 @@ def verify_pin():
         pin = request.form.get('pin', '')
 
         if check_pin(pin):
-            # 验证成功，清除该 IP 的失败记录
             if ip in login_attempts:
                 del login_attempts[ip]
 
-            # 设置 session
             session['authenticated'] = True
             session['auth_time'] = time.time()
 
             return redirect(url_for('teacher'))
         else:
-            # 验证失败，记录尝试
             record_failed_attempt(ip)
             attempts_left = MAX_ATTEMPTS - login_attempts[ip]['count']
 
@@ -158,129 +189,56 @@ def verify_pin():
                 return render_template('pin_verify.html',
                                      error=f'PIN 错误，剩余尝试次数: {attempts_left}')
 
-    # GET 请求，显示验证页面
     return render_template('pin_verify.html')
 
-# --- 路由：老师 (查看) ---
 @app.route('/teacher')
 def teacher():
-    # 检查是否已验证
     if not session.get('authenticated'):
         return redirect(url_for('verify_pin'))
     
-    # 检查 session 是否过期（30分钟）
     auth_time = session.get('auth_time', 0)
-    if time.time() - auth_time > 1800:  # 30分钟
+    if time.time() - auth_time > 1800:
         session.clear()
         return redirect(url_for('verify_pin'))
     
+    if not s3_client:
+        return 'R2 未配置，请联系管理员', 500
+    
     try:
-        headers = {
-            'Authorization': f'Bearer {BLOB_TOKEN}'
-        }
-        
-        # 列出 Blob Storage 中的文件
-        response = requests.get(
-            BLOB_API_URL,
-            params={'prefix': 'uploads/'},
-            headers=headers
+        response = s3_client.list_objects_v2(
+            Bucket=R2_BUCKET_NAME,
+            Prefix='uploads/'
         )
         
-        if response.status_code == 200:
-            data = response.json()
+        files = []
+        for obj in response.get('Contents', []):
+            key = obj['Key']
+            filename = key.replace('uploads/', '', 1)
             
-            # Vercel Blob list API 返回格式: { blobs: [{ pathname, url, size, uploadedAt }], cursor, hasMore }
-            blobs = []
-            for blob in data.get('blobs', []):
-                pathname = blob.get('pathname', '')
-                # 从 pathname 提取显示名（去掉 uploads/ 前缀）
-                display_name = pathname.replace('uploads/', '', 1) if pathname.startswith('uploads/') else pathname
-                blobs.append({
-                    'name': display_name,
-                    'url': blob.get('url', ''),
-                    'size': blob.get('size', 0),
-                    'uploaded_at': blob.get('uploadedAt', '')
-                })
-            
-            return render_template('teacher.html', files=blobs)
-        else:
-            return f'获取文件列表失败 (HTTP {response.status_code}): {response.text}'
-            
+            files.append({
+                'name': filename,
+                'url': get_r2_url(key),
+                'size': obj['Size'],
+                'uploaded_at': obj['LastModified'].isoformat()
+            })
+        
+        files.sort(key=lambda x: x['uploaded_at'], reverse=True)
+        return render_template('teacher.html', files=files)
+        
     except Exception as e:
         return f'获取文件列表失败: {str(e)}'
 
-# --- 路由：退出登录 ---
 @app.route('/teacher/logout')
 def logout():
     session.clear()
     return redirect(url_for('verify_pin'))
 
-# --- 路由：下载文件 ---
-# 使用 pathname 生成短链接（/d/uploads/filename），便于分享
-# 服务端通过 Vercel Blob API 查找对应的 blob URL 再代理下载
 @app.route('/d/<path:pathname>')
 def download_file(pathname):
-    # 只允许 uploads/ 前缀的路径，防止访问 uploads 以外的文件
     if not pathname.startswith('uploads/'):
         return '无效的文件路径', 400
-    if not pathname or pathname == 'uploads/':
-        return '缺少文件路径', 400
+    
+    return redirect(get_r2_url(pathname))
 
-    try:
-        headers = {'Authorization': f'Bearer {BLOB_TOKEN}'}
-
-        # 通过 prefix 查找该文件，处理分页
-        # addRandomSuffix 会在内部 key 中插入随机后缀（如 uploads/file-abc.jpg），
-        # 但 pathname 字段不含后缀（uploads/file.jpg），prefix 按内部 key 匹配，
-        # 所以用去掉扩展名的部分做 prefix，再精确匹配 pathname
-        name_part, ext = os.path.splitext(pathname)
-        search_prefix = name_part
-
-        cursor = None
-        blob = None
-
-        while True:
-            params = {'prefix': search_prefix}
-            if cursor:
-                params['cursor'] = cursor
-
-            response = requests.get(BLOB_API_URL, params=params, headers=headers)
-
-            if response.status_code != 200:
-                return f'文件查找失败 (HTTP {response.status_code}): {response.text}', 404
-
-            data = response.json()
-            blobs_in_page = data.get('blobs', [])
-            # 精确匹配 pathname
-            blob = next((b for b in blobs_in_page if b.get('pathname') == pathname), None)
-            if blob:
-                break
-
-            # 没有更多页，文件不存在
-            if not data.get('hasMore'):
-                return f'文件不存在', 404
-
-            cursor = data.get('cursor')
-
-        blob_url = blob.get('url', '')
-
-        # 代理下载
-        dl_response = requests.get(blob_url, headers=headers, stream=True)
-
-        if dl_response.status_code == 200:
-            filename = pathname.replace('uploads/', '', 1) if pathname.startswith('uploads/') else pathname
-            file_response = Response(
-                dl_response.iter_content(chunk_size=8192),
-                content_type=dl_response.headers.get('Content-Type', 'application/octet-stream')
-            )
-            file_response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-            return file_response
-        else:
-            return f'文件下载失败 (HTTP {dl_response.status_code})', 404
-
-    except Exception as e:
-        return f'文件下载失败: {str(e)}', 500
-
-# Vercel Serverless Function 入口点
 if __name__ == '__main__':
     app.run(debug=False, port=5000)

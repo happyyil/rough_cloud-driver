@@ -3,23 +3,150 @@
 <head>
     <title>文件上传系统</title>
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; }
+        body { font-family: sans-serif; text-align: center; padding: 50px; max-width: 600px; margin: 0 auto; }
         input[type="file"] { margin: 20px 0; }
-        button { padding: 10px 20px; background: #007BFF; color: white; border: none; cursor: pointer; }
+        button { padding: 10px 20px; background: #007BFF; color: white; border: none; cursor: pointer; margin: 5px; }
         button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #progress { width: 100%; height: 20px; margin: 20px 0; display: none; }
+        #status { margin: 20px 0; min-height: 24px; }
+        .success { color: green; }
+        .error { color: red; }
+        .info { color: #666; }
+        #fileInfo { margin: 10px 0; color: #666; }
     </style>
 </head>
 <body>
     <h1>文件上传</h1>
     <p>请选择文件并上传</p>
     
-    <form method="post" enctype="multipart/form-data">
-        <input type="file" name="file" required>
+    <form id="uploadForm" method="post" enctype="multipart/form-data">
+        <input type="file" id="fileInput" name="file" required>
+        <div id="fileInfo"></div>
         <br>
-        <button type="submit">立即上传</button>
+        <button type="submit" id="uploadBtn">立即上传</button>
     </form>
     
-    <p><small><a href="{{ url_for('teacher') }}">查看文件</a></small></p>
+    <progress id="progress" max="100" value="0"></progress>
+    <div id="status"></div>
+    
+    <p><small><a href="/teacher">查看文件</a></small></p>
+    
+    <script>
+        const DIRECT_UPLOAD_LIMIT = 4.5 * 1024 * 1024;
+        
+        const uploadForm = document.getElementById('uploadForm');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const progress = document.getElementById('progress');
+        const status = document.getElementById('status');
+        const fileInfo = document.getElementById('fileInfo');
+        
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files[0];
+            if (file) {
+                const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+                fileInfo.textContent = `文件: ${file.name} (${sizeMB} MB)`;
+            }
+        });
+        
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const file = fileInput.files[0];
+            if (!file) {
+                showStatus('请选择文件', 'error');
+                return;
+            }
+            
+            // 小文件走传统表单上传
+            if (file.size <= DIRECT_UPLOAD_LIMIT) {
+                const formData = new FormData(uploadForm);
+                uploadBtn.disabled = true;
+                showStatus('上传中...', 'info');
+                
+                try {
+                    const response = await fetch('/', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const text = await response.text();
+                    document.body.innerHTML = text;
+                } catch (err) {
+                    showStatus('上传失败: ' + err.message, 'error');
+                    uploadBtn.disabled = false;
+                }
+                return;
+            }
+            
+            // 大文件使用 R2 客户端直传
+            await uploadToR2(file);
+        });
+        
+        async function uploadToR2(file) {
+            uploadBtn.disabled = true;
+            progress.style.display = 'block';
+            showStatus('获取上传链接...', 'info');
+            
+            try {
+                const presignRes = await fetch('/api/r2/presign', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        filename: file.name,
+                        contentType: file.type || 'application/octet-stream'
+                    })
+                });
+                
+                const presignData = await presignRes.json();
+                if (presignData.error) throw new Error(presignData.error);
+                
+                showStatus('上传中...', 'info');
+                
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        progress.value = (e.loaded / e.total) * 100;
+                    }
+                });
+                
+                await new Promise((resolve, reject) => {
+                    xhr.addEventListener('load', () => {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            resolve();
+                        } else {
+                            reject(new Error(`HTTP ${xhr.status}`));
+                        }
+                    });
+                    xhr.addEventListener('error', () => reject(new Error('网络错误')));
+                    xhr.addEventListener('abort', () => reject(new Error('上传被取消')));
+                    
+                    xhr.open('PUT', presignData.presignedUrl);
+                    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                    xhr.send(file);
+                });
+                
+                showStatus(
+                    `上传成功！<br><a href="${presignData.publicUrl}" target="_blank">查看文件</a> ` +
+                    `<a href="/">继续上传</a>`,
+                    'success'
+                );
+                progress.value = 100;
+                
+            } catch (err) {
+                showStatus('上传失败: ' + err.message, 'error');
+            } finally {
+                uploadBtn.disabled = false;
+            }
+        }
+        
+        function showStatus(msg, type) {
+            status.innerHTML = msg;
+            status.className = type;
+        }
+    </script>
+    
     <script src="/_vercel/insights/script.js" defer></script>
 </body>
 </html>
