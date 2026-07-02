@@ -67,6 +67,13 @@ def allowed_file(filename):
 # --- 路由：普通用户 (上传) ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
+    """Debugger Content"""
+    print(f"Method: {request.method}")
+    print(f"Content-Type: {request.content_type}")
+    print(f"Files: {list(request.files.keys())}")
+    print(f"Form: {list(request.form.keys())}")
+    print(f"Headers: {dict(request.headers)}")
+    
     if request.method == 'POST':
         if 'file' not in request.files:
             return '没有文件部分'
