@@ -4,3 +4,4 @@ comd.txt
 .vercel
 .env*.local
 test.py
+.mimocode

@@ -116,16 +116,30 @@ def get_r2_url(key):
 
 # ========== Vercel Blob 操作 ==========
 
+def get_blob_store_id():
+    """从 BLOB_READ_WRITE_TOKEN 中解析 storeId"""
+    if not BLOB_READ_WRITE_TOKEN:
+        return None
+    parts = BLOB_READ_WRITE_TOKEN.split('_')
+    # token 格式: vercel_blob_rw_<storeId>_<random>
+    if len(parts) >= 4:
+        return parts[3]
+    return None
+
 def blob_upload(filename, file_data, content_type):
     """上传文件到 Vercel Blob"""
     if not BLOB_READ_WRITE_TOKEN:
         raise Exception('BLOB_READ_WRITE_TOKEN 未配置')
 
+    store_id = get_blob_store_id()
     headers = {
         'Authorization': f'Bearer {BLOB_READ_WRITE_TOKEN}',
         'x-vercel-blob-access': 'public',
         'x-content-type': content_type,
     }
+    if store_id:
+        headers['x-vercel-blob-store-id'] = store_id
+
     params = {
         'pathname': f'uploads/{filename}',
     }
@@ -148,9 +162,13 @@ def blob_list():
     if not BLOB_READ_WRITE_TOKEN:
         return []
 
+    store_id = get_blob_store_id()
     headers = {
         'Authorization': f'Bearer {BLOB_READ_WRITE_TOKEN}',
     }
+    if store_id:
+        headers['x-vercel-blob-store-id'] = store_id
+
     params = {
         'prefix': 'uploads/',
     }
