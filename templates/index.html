@@ -75,6 +75,8 @@
                 } catch (err) {
                     showStatus('上传失败: ' + err.message, 'error');
                     uploadBtn.disabled = false;
+                    progress.value = 0;
+                    progress.style.display = 'none';
                 }
                 return;
             }
@@ -132,7 +134,8 @@
                     `<a href="/">继续上传</a>`,
                     'success'
                 );
-                progress.value = 100;
+                progress.value = 0;
+                progress.style.display = 'none';
                 
             } catch (err) {
                 showStatus('上传失败: ' + err.message, 'error');

@@ -31,10 +31,32 @@ if all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_KEY]):
         config=Config(signature_version='s3v4')
     )
 
-# 登录限制
-login_attempts = {}
+# 登录限制 - 文件持久化存储
 MAX_ATTEMPTS = 5
 LOCKOUT_TIME = 300
+LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.login_attempts.json')
+
+def load_login_attempts():
+    """从文件加载登录尝试记录"""
+    try:
+        if os.path.exists(LOGIN_ATTEMPTS_FILE):
+            with open(LOGIN_ATTEMPTS_FILE, 'r') as f:
+                data = json.load(f)
+                # 清理过期记录
+                current_time = time.time()
+                return {ip: v for ip, v in data.items()
+                        if current_time - v['last_attempt'] < LOCKOUT_TIME}
+    except (json.JSONDecodeError, IOError):
+        pass
+    return {}
+
+def save_login_attempts(attempts):
+    """保存登录尝试记录到文件"""
+    try:
+        with open(LOGIN_ATTEMPTS_FILE, 'w') as f:
+            json.dump(attempts, f)
+    except IOError:
+        pass
 
 def get_client_ip():
     if request.headers.getlist("X-Forwarded-For"):
@@ -42,20 +64,31 @@ def get_client_ip():
     return request.remote_addr
 
 def is_ip_locked(ip):
+    login_attempts = load_login_attempts()
     if ip in login_attempts:
         attempts = login_attempts[ip]
         if attempts['count'] >= MAX_ATTEMPTS:
             if time.time() - attempts['last_attempt'] < LOCKOUT_TIME:
                 return True
             else:
-                login_attempts[ip] = {'count': 0, 'last_attempt': 0}
+                del login_attempts[ip]
+                save_login_attempts(login_attempts)
     return False
 
 def record_failed_attempt(ip):
+    login_attempts = load_login_attempts()
     if ip not in login_attempts:
         login_attempts[ip] = {'count': 0, 'last_attempt': 0}
     login_attempts[ip]['count'] += 1
     login_attempts[ip]['last_attempt'] = time.time()
+    save_login_attempts(login_attempts)
+
+def clear_failed_attempts(ip):
+    """清除指定 IP 的失败记录"""
+    login_attempts = load_login_attempts()
+    if ip in login_attempts:
+        del login_attempts[ip]
+        save_login_attempts(login_attempts)
 
 def check_pin(pin):
     if not PIN_HASH:
@@ -159,9 +192,11 @@ def index():
 @app.route('/teacher/verify', methods=['GET', 'POST'])
 def verify_pin():
     ip = get_client_ip()
-    
+
     if is_ip_locked(ip):
-        remaining_time = int(LOCKOUT_TIME - (time.time() - login_attempts[ip]['last_attempt']))
+        login_attempts = load_login_attempts()
+        last_attempt = login_attempts.get(ip, {}).get('last_attempt', time.time())
+        remaining_time = int(LOCKOUT_TIME - (time.time() - last_attempt))
         return render_template('pin_verify.html',
                              error=f'登录尝试次数过多，请 {remaining_time} 秒后再试',
                              locked=True)
@@ -170,8 +205,7 @@ def verify_pin():
         pin = request.form.get('pin', '')
 
         if check_pin(pin):
-            if ip in login_attempts:
-                del login_attempts[ip]
+            clear_failed_attempts(ip)
 
             session['authenticated'] = True
             session['auth_time'] = time.time()
@@ -179,7 +213,8 @@ def verify_pin():
             return redirect(url_for('teacher'))
         else:
             record_failed_attempt(ip)
-            attempts_left = MAX_ATTEMPTS - login_attempts[ip]['count']
+            login_attempts = load_login_attempts()
+            attempts_left = MAX_ATTEMPTS - login_attempts.get(ip, {}).get('count', 0)
 
             if attempts_left <= 0:
                 return render_template('pin_verify.html',
@@ -203,25 +238,37 @@ def teacher():
     
     if not s3_client:
         return 'R2 未配置，请联系管理员', 500
-    
+
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=R2_BUCKET_NAME,
-            Prefix='uploads/'
-        )
-        
         files = []
-        for obj in response.get('Contents', []):
-            key = obj['Key']
-            filename = key.replace('uploads/', '', 1)
-            
-            files.append({
-                'name': filename,
-                'url': get_r2_url(key),
-                'size': obj['Size'],
-                'uploaded_at': obj['LastModified'].isoformat()
-            })
-        
+        continuation_token = None
+
+        while True:
+            list_kwargs = {
+                'Bucket': R2_BUCKET_NAME,
+                'Prefix': 'uploads/',
+                'MaxKeys': 1000
+            }
+            if continuation_token:
+                list_kwargs['ContinuationToken'] = continuation_token
+
+            response = s3_client.list_objects_v2(**list_kwargs)
+
+            for obj in response.get('Contents', []):
+                key = obj['Key']
+                filename = key.replace('uploads/', '', 1)
+                files.append({
+                    'name': filename,
+                    'url': get_r2_url(key),
+                    'size': obj['Size'],
+                    'uploaded_at': obj['LastModified'].isoformat()
+                })
+
+            if response.get('IsTruncated'):
+                continuation_token = response['NextContinuationToken']
+            else:
+                break
+
         files.sort(key=lambda x: x['uploaded_at'], reverse=True)
         return render_template('teacher.html', files=files)
         
