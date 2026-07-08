@@ -16,7 +16,7 @@ PIN_HASH = os.getenv('PIN_HASH')
 
 # Vercel Blob 配置（小文件存储）
 BLOB_READ_WRITE_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN')
-BLOB_API_URL = 'https://api.vercel.com/v2/blobs'
+BLOB_API_URL = 'https://vercel.com/api/blob'
 
 # Cloudflare R2 配置（大文件存储）
 R2_ACCOUNT_ID = os.getenv('R2_ACCOUNT_ID')
@@ -123,14 +123,15 @@ def blob_upload(filename, file_data, content_type):
 
     headers = {
         'Authorization': f'Bearer {BLOB_READ_WRITE_TOKEN}',
+        'x-vercel-blob-access': 'public',
+        'x-content-type': content_type,
     }
     params = {
         'pathname': f'uploads/{filename}',
-        'contentType': content_type,
     }
 
     response = requests.put(
-        f'{BLOB_API_URL}',
+        f'{BLOB_API_URL}/',
         headers=headers,
         params=params,
         data=file_data,
@@ -155,7 +156,7 @@ def blob_list():
     }
 
     response = requests.get(
-        f'{BLOB_API_URL}',
+        f'{BLOB_API_URL}/',
         headers=headers,
         params=params,
         timeout=30
