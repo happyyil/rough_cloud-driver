@@ -16,7 +16,6 @@ PIN_HASH = os.getenv('PIN_HASH')
 
 # Vercel Blob 配置（小文件存储）
 BLOB_READ_WRITE_TOKEN = os.getenv('BLOB_READ_WRITE_TOKEN')
-BLOB_API_URL = 'https://vercel.com/api/blob'
 
 # Cloudflare R2 配置（大文件存储）
 R2_ACCOUNT_ID = os.getenv('R2_ACCOUNT_ID')
@@ -116,43 +115,28 @@ def get_r2_url(key):
 
 # ========== Vercel Blob 操作 ==========
 
-def get_blob_store_id():
-    """从 BLOB_READ_WRITE_TOKEN 中解析 storeId"""
-    if not BLOB_READ_WRITE_TOKEN:
-        return None
-    parts = BLOB_READ_WRITE_TOKEN.split('_')
-    # token 格式: vercel_blob_rw_<storeId>_<random>
-    if len(parts) >= 4:
-        return parts[3]
-    return None
-
 def blob_upload(filename, file_data, content_type):
     """上传文件到 Vercel Blob"""
     if not BLOB_READ_WRITE_TOKEN:
         raise Exception('BLOB_READ_WRITE_TOKEN 未配置')
 
-    store_id = get_blob_store_id()
+    pathname = f'uploads/{filename}'
+
     headers = {
         'Authorization': f'Bearer {BLOB_READ_WRITE_TOKEN}',
         'x-vercel-blob-access': 'public',
-        'x-content-type': content_type,
+        'x-vercel-blob-content-type': content_type,
     }
-    if store_id:
-        headers['x-vercel-blob-store-id'] = store_id
-
-    pathname = f'uploads/{filename}'
-    # 直接拼接 pathname 到 URL，不使用 params 避免 URL 编码问题
-    url = f'{BLOB_API_URL}/?pathname={pathname}'
 
     response = requests.put(
-        url,
+        f'https://blob.vercel-storage.com/{pathname}',
         headers=headers,
         data=file_data,
         timeout=60
     )
 
-    if response.status_code != 200:
-        raise Exception(f'Blob upload failed: {response.text}')
+    if response.status_code not in (200, 201):
+        raise Exception(f'Blob upload failed [{response.status_code}]: {response.text}')
 
     return response.json()
 
@@ -161,19 +145,12 @@ def blob_list():
     if not BLOB_READ_WRITE_TOKEN:
         return []
 
-    store_id = get_blob_store_id()
     headers = {
         'Authorization': f'Bearer {BLOB_READ_WRITE_TOKEN}',
     }
-    if store_id:
-        headers['x-vercel-blob-store-id'] = store_id
-
-    prefix = 'uploads/'
-    # 直接拼接 prefix 到 URL，不使用 params 避免 URL 编码问题
-    url = f'{BLOB_API_URL}/?prefix={prefix}'
 
     response = requests.get(
-        url,
+        'https://blob.vercel-storage.com/?prefix=uploads/',
         headers=headers,
         timeout=30
     )
