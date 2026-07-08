@@ -140,14 +140,13 @@ def blob_upload(filename, file_data, content_type):
     if store_id:
         headers['x-vercel-blob-store-id'] = store_id
 
-    params = {
-        'pathname': f'uploads/{filename}',
-    }
+    pathname = f'uploads/{filename}'
+    # 直接拼接 pathname 到 URL，不使用 params 避免 URL 编码问题
+    url = f'{BLOB_API_URL}/?pathname={pathname}'
 
     response = requests.put(
-        f'{BLOB_API_URL}/',
+        url,
         headers=headers,
-        params=params,
         data=file_data,
         timeout=60
     )
@@ -169,14 +168,13 @@ def blob_list():
     if store_id:
         headers['x-vercel-blob-store-id'] = store_id
 
-    params = {
-        'prefix': 'uploads/',
-    }
+    prefix = 'uploads/'
+    # 直接拼接 prefix 到 URL，不使用 params 避免 URL 编码问题
+    url = f'{BLOB_API_URL}/?prefix={prefix}'
 
     response = requests.get(
-        f'{BLOB_API_URL}/',
+        url,
         headers=headers,
-        params=params,
         timeout=30
     )
 
