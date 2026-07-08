@@ -21,7 +21,7 @@
     <p>请选择文件并上传</p>
     
     <form id="uploadForm" method="post" enctype="multipart/form-data">
-        <input type="file" id="fileInput" name="file" required>
+        <input type="file" id="fileInput" name="file" multiple required>
         <div id="fileInfo"></div>
         <br>
         <button type="submit" id="uploadBtn">立即上传</button>
@@ -34,116 +34,146 @@
     
     <script>
         const DIRECT_UPLOAD_LIMIT = 4.5 * 1024 * 1024;
-        
+
         const uploadForm = document.getElementById('uploadForm');
         const fileInput = document.getElementById('fileInput');
         const uploadBtn = document.getElementById('uploadBtn');
         const progress = document.getElementById('progress');
         const status = document.getElementById('status');
         const fileInfo = document.getElementById('fileInfo');
-        
+
         fileInput.addEventListener('change', () => {
-            const file = fileInput.files[0];
-            if (file) {
-                const sizeMB = (file.size / 1024 / 1024).toFixed(2);
-                fileInfo.textContent = `文件: ${file.name} (${sizeMB} MB)`;
+            const files = fileInput.files;
+            if (files.length === 0) {
+                fileInfo.textContent = '';
+                return;
+            }
+            if (files.length === 1) {
+                const sizeMB = (files[0].size / 1024 / 1024).toFixed(2);
+                fileInfo.textContent = `文件: ${files[0].name} (${sizeMB} MB)`;
+            } else {
+                const totalSize = Array.from(files).reduce((sum, f) => sum + f.size, 0);
+                const totalMB = (totalSize / 1024 / 1024).toFixed(2);
+                fileInfo.textContent = `已选择 ${files.length} 个文件，共 ${totalSize < 1024*1024 ? (totalSize/1024).toFixed(1)+' KB' : totalMB+' MB'}`;
             }
         });
-        
+
         uploadForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            
-            const file = fileInput.files[0];
-            if (!file) {
+
+            const files = Array.from(fileInput.files);
+            if (files.length === 0) {
                 showStatus('请选择文件', 'error');
                 return;
             }
-            
-            // 小文件走传统表单上传
-            if (file.size <= DIRECT_UPLOAD_LIMIT) {
-                const formData = new FormData(uploadForm);
-                uploadBtn.disabled = true;
-                showStatus('上传中...', 'info');
-                
+
+            uploadBtn.disabled = true;
+            const smallFiles = files.filter(f => f.size <= DIRECT_UPLOAD_LIMIT);
+            const largeFiles = files.filter(f => f.size > DIRECT_UPLOAD_LIMIT);
+
+            let successCount = 0;
+            let failCount = 0;
+            const results = [];
+
+            // 小文件批量走传统表单上传
+            if (smallFiles.length > 0) {
+                showStatus(`上传中... (0/${files.length})`, 'info');
+                const formData = new FormData();
+                smallFiles.forEach(f => formData.append('files', f));
+
                 try {
-                    const response = await fetch('/', {
+                    const response = await fetch('/api/upload', {
                         method: 'POST',
                         body: formData
                     });
-                    const text = await response.text();
-                    document.body.innerHTML = text;
+                    const data = await response.json();
+                    if (data.success) {
+                        successCount += smallFiles.length;
+                        results.push(...smallFiles.map(f => ({ name: f.name, ok: true })));
+                    } else {
+                        failCount += smallFiles.length;
+                        results.push(...smallFiles.map(f => ({ name: f.name, ok: false, error: data.error })));
+                    }
                 } catch (err) {
-                    showStatus('上传失败: ' + err.message, 'error');
-                    uploadBtn.disabled = false;
-                    progress.value = 0;
-                    progress.style.display = 'none';
+                    failCount += smallFiles.length;
+                    results.push(...smallFiles.map(f => ({ name: f.name, ok: false, error: err.message })));
                 }
-                return;
             }
-            
-            // 大文件使用 R2 客户端直传
-            await uploadToR2(file);
+
+            // 大文件逐个走 R2 直传
+            for (let i = 0; i < largeFiles.length; i++) {
+                const file = largeFiles[i];
+                const done = successCount + failCount;
+                showStatus(`上传中... (${done}/${files.length}) - ${file.name}`, 'info');
+                progress.style.display = 'block';
+
+                try {
+                    await uploadSingleToR2(file);
+                    successCount++;
+                    results.push({ name: file.name, ok: true });
+                } catch (err) {
+                    failCount++;
+                    results.push({ name: file.name, ok: false, error: err.message });
+                }
+            }
+
+            // 显示结果
+            progress.value = 0;
+            progress.style.display = 'none';
+
+            if (failCount === 0) {
+                const links = results.map(r => r.name).join(', ');
+                showStatus(`全部上传成功！(${successCount} 个文件)<br><a href="/">继续上传</a>`, 'success');
+            } else if (successCount === 0) {
+                showStatus(`全部失败: ${results[0].error}`, 'error');
+            } else {
+                const failedNames = results.filter(r => !r.ok).map(r => r.name).join(', ');
+                showStatus(`成功 ${successCount} 个，失败 ${failCount} 个 (${failedNames})<br><a href="/">继续上传</a>`, 'info');
+            }
+
+            uploadBtn.disabled = false;
         });
-        
-        async function uploadToR2(file) {
-            uploadBtn.disabled = true;
-            progress.style.display = 'block';
-            showStatus('获取上传链接...', 'info');
-            
-            try {
-                const presignRes = await fetch('/api/r2/presign', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        filename: file.name,
-                        contentType: file.type || 'application/octet-stream'
-                    })
-                });
-                
-                const presignData = await presignRes.json();
-                if (presignData.error) throw new Error(presignData.error);
-                
-                showStatus('上传中...', 'info');
-                
+
+        async function uploadSingleToR2(file) {
+            const presignRes = await fetch('/api/r2/presign', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    filename: file.name,
+                    contentType: file.type || 'application/octet-stream'
+                })
+            });
+
+            const presignData = await presignRes.json();
+            if (presignData.error) throw new Error(presignData.error);
+
+            return new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
-                
+
                 xhr.upload.addEventListener('progress', (e) => {
                     if (e.lengthComputable) {
-                        progress.value = (e.loaded / e.total) * 100;
+                        const base = (successCount || 0) / fileInput.files.length * 100;
+                        const filePercent = (e.loaded / e.total) * (100 / fileInput.files.length);
+                        progress.value = base + filePercent;
                     }
                 });
-                
-                await new Promise((resolve, reject) => {
-                    xhr.addEventListener('load', () => {
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                            resolve();
-                        } else {
-                            reject(new Error(`HTTP ${xhr.status}`));
-                        }
-                    });
-                    xhr.addEventListener('error', () => reject(new Error('网络错误')));
-                    xhr.addEventListener('abort', () => reject(new Error('上传被取消')));
-                    
-                    xhr.open('PUT', presignData.presignedUrl);
-                    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-                    xhr.send(file);
+
+                xhr.addEventListener('load', () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        resolve();
+                    } else {
+                        reject(new Error(`HTTP ${xhr.status}`));
+                    }
                 });
-                
-                showStatus(
-                    `上传成功！<br><a href="${presignData.publicUrl}" target="_blank">查看文件</a> ` +
-                    `<a href="/">继续上传</a>`,
-                    'success'
-                );
-                progress.value = 0;
-                progress.style.display = 'none';
-                
-            } catch (err) {
-                showStatus('上传失败: ' + err.message, 'error');
-            } finally {
-                uploadBtn.disabled = false;
-            }
+                xhr.addEventListener('error', () => reject(new Error('网络错误')));
+                xhr.addEventListener('abort', () => reject(new Error('上传被取消')));
+
+                xhr.open('PUT', presignData.presignedUrl);
+                xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+                xhr.send(file);
+            });
         }
-        
+
         function showStatus(msg, type) {
             status.innerHTML = msg;
             status.className = type;
