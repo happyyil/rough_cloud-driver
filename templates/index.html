@@ -75,11 +75,14 @@
             let failCount = 0;
             const results = [];
 
-            // 小文件批量走传统表单上传
-            if (smallFiles.length > 0) {
-                showStatus(`上传中... (0/${files.length})`, 'info');
+            // 小文件逐个上传，避免 Vercel 4.5MB 请求体限制
+            for (let i = 0; i < smallFiles.length; i++) {
+                const file = smallFiles[i];
+                const done = successCount + failCount;
+                showStatus(`上传中... (${done}/${files.length}) - ${file.name}`, 'info');
+
                 const formData = new FormData();
-                smallFiles.forEach(f => formData.append('files', f));
+                formData.append('files', file);
 
                 try {
                     const response = await fetch('/api/upload', {
@@ -88,15 +91,15 @@
                     });
                     const data = await response.json();
                     if (data.success) {
-                        successCount += smallFiles.length;
-                        results.push(...smallFiles.map(f => ({ name: f.name, ok: true })));
+                        successCount++;
+                        results.push({ name: file.name, ok: true });
                     } else {
-                        failCount += smallFiles.length;
-                        results.push(...smallFiles.map(f => ({ name: f.name, ok: false, error: data.error })));
+                        failCount++;
+                        results.push({ name: file.name, ok: false, error: data.error });
                     }
                 } catch (err) {
-                    failCount += smallFiles.length;
-                    results.push(...smallFiles.map(f => ({ name: f.name, ok: false, error: err.message })));
+                    failCount++;
+                    results.push({ name: file.name, ok: false, error: err.message });
                 }
             }
 
