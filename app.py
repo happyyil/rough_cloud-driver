@@ -6,7 +6,7 @@ import base64
 import boto3
 import requests
 from botocore.config import Config
-from flask import Flask, request, render_template, Response, session, redirect, url_for, jsonify
+from flask import Flask, request, render_template, Response, session, redirect, url_for, jsonify, send_file
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -46,20 +46,22 @@ LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '
 
 # ========== 下载链接编码 ==========
 
-def encode_download_token(filename, storage):
-    """将文件名+存储类型编码为 URL 安全的 token"""
-    payload = f'{filename}:{storage}'
+def encode_download_token(original_name, stored_name, storage):
+    """将原始文件名+存储文件名+存储类型编码为 URL 安全的 token"""
+    payload = f'{original_name}:{stored_name}:{storage}'
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip('=')
 
 def decode_download_token(token):
-    """解码 token，返回 (filename, storage) 或 None"""
+    """解码 token，返回 (original_name, stored_name, storage) 或 None"""
     try:
         padding = 4 - len(token) % 4
         if padding != 4:
             token += '=' * padding
         payload = base64.urlsafe_b64decode(token.encode()).decode()
-        filename, storage = payload.rsplit(':', 1)
-        return filename, storage
+        parts = payload.rsplit(':', 2)
+        if len(parts) == 3:
+            return parts[0], parts[1], parts[2]
+        return None
     except Exception:
         return None
 
@@ -211,7 +213,7 @@ def get_presigned_url():
             ExpiresIn=900
         )
 
-        token = encode_download_token(unique_name, 'r2')
+        token = encode_download_token(filename, unique_name, 'r2')
 
         return jsonify({
             'presignedUrl': presigned_url,
@@ -281,7 +283,7 @@ def upload_files():
                 result_url = get_r2_url(key)
                 storage = 'r2'
 
-            token = encode_download_token(filename, storage)
+            token = encode_download_token(original_filename, filename, storage)
             uploaded.append({'name': original_filename, 'download_url': f'/d/{token}', 'storage': storage})
         except Exception as e:
             errors.append(f'{original_filename}: {str(e)}')
@@ -395,13 +397,14 @@ def teacher():
             if not pathname.startswith('uploads/'):
                 continue
             filename = pathname.replace('uploads/', '', 1)
+            token = encode_download_token(filename, filename, 'blob')
             files.append({
                 'name': filename,
                 'url': blob.get('url'),
                 'size': blob.get('size', 0),
                 'uploaded_at': blob.get('uploadedAt', ''),
                 'storage': 'blob',
-                'token': encode_download_token(filename, 'blob')
+                'token': token
             })
     except Exception as e:
         pass
@@ -430,7 +433,7 @@ def teacher():
                         'size': obj['Size'],
                         'uploaded_at': obj['LastModified'].isoformat(),
                         'storage': 'r2',
-                        'token': encode_download_token(filename, 'r2')
+                        'token': encode_download_token(filename, filename, 'r2')
                     })
 
                 if response.get('IsTruncated'):
@@ -453,14 +456,23 @@ def download_file(token):
     result = decode_download_token(token)
     if not result:
         return '无效的链接', 400
-    filename, storage = result
+    original_name, stored_name, storage = result
+
     if storage == 'blob':
         blob_files = blob_list()
         for blob in blob_files:
-            if blob.get('pathname') == f'uploads/{filename}':
-                return redirect(blob.get('url', ''))
+            if blob.get('pathname') == f'uploads/{stored_name}':
+                resp = requests.get(blob.get('url', ''), timeout=60)
+                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
+                response.headers['Content-Disposition'] = f'attachment; filename="{original_name}"'
+                return response
         return '文件不存在', 404
-    return redirect(get_r2_url(f'uploads/{filename}'))
+    else:
+        url = get_r2_url(f'uploads/{stored_name}')
+        resp = requests.get(url, timeout=60)
+        response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
+        response.headers['Content-Disposition'] = f'attachment; filename="{original_name}"'
+        return response
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000)

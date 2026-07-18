@@ -19,11 +19,11 @@
             border-radius: 4px;
             font-size: 14px;
         }
-        .logout-btn:hover {
-            background: #c82333;
-        }
+        .logout-btn:hover { background: #c82333; }
         ul { list-style-type: none; padding: 0; }
-        li { background: #f4f4f4; margin: 10px 0; padding: 15px; border-radius: 5px; }
+        li { background: #f4f4f4; margin: 10px 0; padding: 15px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
+        .file-info { flex: 1; }
+        .file-meta { color: #888; font-size: 13px; margin-top: 4px; }
         a { text-decoration: none; color: #007BFF; font-weight: bold; }
         a:hover { text-decoration: underline; }
     </style>
@@ -38,10 +38,15 @@
     <ul>
         {% for file in files %}
             <li>
-                <a href="{{ url_for('download_file', token=file.token) }}" target="_blank">
-                    {{ file.name }}
-                    {% if file.size %}<small>({{ "%.1f"|format(file.size / 1024) }} KB)</small>{% endif %}
-                </a>
+                <div class="file-info">
+                    <a href="{{ url_for('download_file', token=file.token) }}" target="_blank">
+                        {{ file.name }}
+                    </a>
+                    <div class="file-meta">
+                        {% if file.size %}{{ "%.1f"|format(file.size / 1024) }} KB{% endif %}
+                        {% if file.uploaded_at %} · {{ file.uploaded_at[:10] }} {{ file.uploaded_at[11:19] }}{% endif %}
+                    </div>
+                </div>
             </li>
         {% else %}
             <li>目前还没有人上传文件。</li>
