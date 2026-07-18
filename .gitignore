@@ -6,3 +6,4 @@ comd.txt
 test.py
 .mimocode
 .login_attempts.json
+__pycache__/
