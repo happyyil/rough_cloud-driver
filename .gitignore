@@ -5,5 +5,4 @@ comd.txt
 .env*.local
 test.py
 .mimocode
-data/
 .login_attempts.json
