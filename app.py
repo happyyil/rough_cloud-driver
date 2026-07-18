@@ -2,6 +2,7 @@ import os
 import json
 import hashlib
 import time
+import uuid
 import boto3
 import requests
 from botocore.config import Config
@@ -42,6 +43,9 @@ if all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_KEY]):
 MAX_ATTEMPTS = 5
 LOCKOUT_TIME = 300
 LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.login_attempts.json')
+
+# UUID 下载链接存储
+UPLOADS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'uploads.json')
 
 def load_login_attempts():
     """从文件加载登录尝试记录"""
@@ -96,6 +100,26 @@ def clear_failed_attempts(ip):
     if ip in login_attempts:
         del login_attempts[ip]
         save_login_attempts(login_attempts)
+
+# ========== UUID 下载链接 ==========
+
+def load_uploads_db():
+    try:
+        os.makedirs(os.path.dirname(UPLOADS_DB), exist_ok=True)
+        if os.path.exists(UPLOADS_DB):
+            with open(UPLOADS_DB, 'r') as f:
+                return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        pass
+    return {}
+
+def save_upload_record(record):
+    uploads = load_uploads_db()
+    file_uuid = uuid.uuid4().hex
+    uploads[file_uuid] = record
+    with open(UPLOADS_DB, 'w') as f:
+        json.dump(uploads, f, indent=2, ensure_ascii=False)
+    return file_uuid
 
 def check_pin(pin):
     if not PIN_HASH:
@@ -190,10 +214,18 @@ def get_presigned_url():
             },
             ExpiresIn=900
         )
-        
+
+        file_uuid = save_upload_record({
+            'name': unique_name,
+            'original_name': filename,
+            'url': get_r2_url(key),
+            'storage': 'r2',
+            'uploaded_at': time.time()
+        })
+
         return jsonify({
             'presignedUrl': presigned_url,
-            'publicUrl': get_r2_url(key),
+            'downloadUrl': f'/d/{file_uuid}',
             'key': key,
             'filename': unique_name
         })
@@ -242,7 +274,8 @@ def upload_files():
                     errors.append(f'{original_filename}: BLOB_READ_WRITE_TOKEN 未配置')
                     continue
                 result = blob_upload(filename, file_data, content_type)
-                uploaded.append({'name': filename, 'url': result.get('url'), 'storage': 'blob'})
+                result_url = result.get('url')
+                storage = 'blob'
             else:
                 # 大文件上传到 R2
                 if not s3_client:
@@ -255,7 +288,17 @@ def upload_files():
                     Body=file_data,
                     ContentType=content_type
                 )
-                uploaded.append({'name': filename, 'url': get_r2_url(key), 'storage': 'r2'})
+                result_url = get_r2_url(key)
+                storage = 'r2'
+
+            file_uuid = save_upload_record({
+                'name': filename,
+                'original_name': original_filename,
+                'url': result_url,
+                'storage': storage,
+                'uploaded_at': time.time()
+            })
+            uploaded.append({'name': original_filename, 'download_url': f'/d/{file_uuid}', 'storage': storage})
         except Exception as e:
             errors.append(f'{original_filename}: {str(e)}')
 
@@ -360,6 +403,12 @@ def teacher():
 
     files = []
 
+    # 从 UUID 数据库加载已有记录
+    uploads_db = load_uploads_db()
+    uuid_by_name = {}
+    for file_uuid, record in uploads_db.items():
+        uuid_by_name[record.get('name', '')] = file_uuid
+
     # 从 Vercel Blob 获取文件
     try:
         blob_files = blob_list()
@@ -373,7 +422,8 @@ def teacher():
                 'url': blob.get('url'),
                 'size': blob.get('size', 0),
                 'uploaded_at': blob.get('uploadedAt', ''),
-                'storage': 'blob'
+                'storage': 'blob',
+                'uuid': uuid_by_name.get(filename, '')
             })
     except Exception as e:
         pass
@@ -401,7 +451,8 @@ def teacher():
                         'url': get_r2_url(key),
                         'size': obj['Size'],
                         'uploaded_at': obj['LastModified'].isoformat(),
-                        'storage': 'r2'
+                        'storage': 'r2',
+                        'uuid': uuid_by_name.get(filename, '')
                     })
 
                 if response.get('IsTruncated'):
@@ -419,19 +470,13 @@ def logout():
     session.clear()
     return redirect(url_for('verify_pin'))
 
-@app.route('/d/<path:pathname>')
-def download_file(pathname):
-    if not pathname.startswith('uploads/'):
-        return '无效的文件路径', 400
-
-    # URL 参数中传递 storage 类型（blob 或 r2）
-    storage = request.args.get('storage', 'r2')
-
-    if storage == 'blob':
-        # 直接重定向到 Vercel Blob URL（teacher 页面会传完整 URL）
-        return redirect(request.args.get('url', ''))
-    else:
-        return redirect(get_r2_url(pathname))
+@app.route('/d/<file_uuid>')
+def download_file(file_uuid):
+    uploads = load_uploads_db()
+    record = uploads.get(file_uuid)
+    if not record:
+        return '文件不存在', 404
+    return redirect(record['url'])
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000)

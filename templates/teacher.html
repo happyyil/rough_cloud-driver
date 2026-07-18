@@ -38,10 +38,12 @@
     <ul>
         {% for file in files %}
             <li>
-                {% if file.storage == 'blob' %}
+                {% if file.uuid %}
+                    <a href="{{ url_for('download_file', file_uuid=file.uuid) }}" target="_blank">
+                {% elif file.storage == 'blob' %}
                     <a href="{{ file.url }}" target="_blank">
                 {% else %}
-                    <a href="{{ url_for('download_file', pathname='uploads/' + file.name, storage='r2') }}" target="_blank">
+                    <a href="{{ file.url }}" target="_blank">
                 {% endif %}
                     {{ file.name }}
                     {% if file.size %}<small>({{ "%.1f"|format(file.size / 1024) }} KB)</small>{% endif %}

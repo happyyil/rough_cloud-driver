@@ -91,8 +91,12 @@
                     });
                     const data = await response.json();
                     if (data.success) {
-                        successCount++;
-                        results.push({ name: file.name, ok: true });
+                        successCount += data.uploaded.length;
+                        results.push(...data.uploaded.map(u => ({ name: u.name, ok: true, downloadUrl: u.download_url })));
+                        if (data.errors) {
+                            failCount += data.errors.length;
+                            results.push(...data.errors.map(e => ({ name: e, ok: false, error: e })));
+                        }
                     } else {
                         failCount++;
                         results.push({ name: file.name, ok: false, error: data.error });
@@ -111,9 +115,9 @@
                 progress.style.display = 'block';
 
                 try {
-                    await uploadSingleToR2(file);
+                    const downloadUrl = await uploadSingleToR2(file);
                     successCount++;
-                    results.push({ name: file.name, ok: true });
+                    results.push({ name: file.name, ok: true, downloadUrl: downloadUrl });
                 } catch (err) {
                     failCount++;
                     results.push({ name: file.name, ok: false, error: err.message });
@@ -124,14 +128,16 @@
             progress.value = 0;
             progress.style.display = 'none';
 
+            const host = location.origin;
             if (failCount === 0) {
-                const links = results.map(r => r.name).join(', ');
-                showStatus(`全部上传成功！(${successCount} 个文件)<br><a href="/">继续上传</a>`, 'success');
+                const links = results.map(r => `<a href="${host}${r.downloadUrl}" target="_blank">${r.name}</a>`).join('<br>');
+                showStatus(`全部上传成功！(${successCount} 个文件)<br>${links}<br><a href="/">继续上传</a>`, 'success');
             } else if (successCount === 0) {
                 showStatus(`全部失败: ${results[0].error}`, 'error');
             } else {
-                const failedNames = results.filter(r => !r.ok).map(r => r.name).join(', ');
-                showStatus(`成功 ${successCount} 个，失败 ${failCount} 个 (${failedNames})<br><a href="/">继续上传</a>`, 'info');
+                const successLinks = results.filter(r => r.ok).map(r => `<a href="${host}${r.downloadUrl}" target="_blank">${r.name}</a>`).join('<br>');
+                const failedInfo = results.filter(r => !r.ok).map(r => `${r.name}: ${r.error || '未知错误'}`).join('<br>');
+                showStatus(`成功 ${successCount} 个，失败 ${failCount} 个<br>${successLinks}<br><b style="color:red">${failedInfo}</b><br><a href="/">继续上传</a>`, 'info');
             }
 
             uploadBtn.disabled = false;
@@ -163,12 +169,12 @@
 
                 xhr.addEventListener('load', () => {
                     if (xhr.status >= 200 && xhr.status < 300) {
-                        resolve();
+                        resolve(presignData.downloadUrl);
                     } else {
-                        reject(new Error(`HTTP ${xhr.status}`));
+                        reject(new Error(`R2 上传失败: HTTP ${xhr.status} ${xhr.statusText || ''}`));
                     }
                 });
-                xhr.addEventListener('error', () => reject(new Error('网络错误')));
+                xhr.addEventListener('error', () => reject(new Error('R2 网络错误，可能是 CORS 或网络问题')));
                 xhr.addEventListener('abort', () => reject(new Error('上传被取消')));
 
                 xhr.open('PUT', presignData.presignedUrl);
