@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import hmac
 import time
 import base64
 import boto3
@@ -12,8 +13,8 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', os.urandom(32).hex())
 
-# API Key 配置（用于程序化调用）
-API_KEY = os.getenv('API_KEY')
+# Token 配置
+TOKEN_EXPIRE_HOURS = 24  # Token 有效期
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3'}
 PIN_HASH = os.getenv('PIN_HASH')
@@ -131,14 +132,58 @@ def check_pin(pin):
     pin_hash = hashlib.sha256(pin.encode()).hexdigest()
     return pin_hash == PIN_HASH
 
-def verify_api_key():
-    """验证 API Key，返回 True/False"""
-    if not API_KEY:
+def generate_api_token(pin):
+    """生成 API Token（HMAC 签名，含过期时间）"""
+    expire_time = int(time.time()) + TOKEN_EXPIRE_HOURS * 3600
+    payload = f'api_user:{expire_time}'
+    signature = hmac.new(
+        app.secret_key.encode(),
+        payload.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    token_data = f'{payload}:{signature}'
+    return base64.urlsafe_b64encode(token_data.encode()).decode().rstrip('=')
+
+def verify_api_token(token):
+    """验证 API Token，返回 True/False"""
+    try:
+        # 补全 base64 padding
+        padding = 4 - len(token) % 4
+        if padding != 4:
+            token += '=' * padding
+        token_data = base64.urlsafe_b64decode(token.encode()).decode()
+        parts = token_data.rsplit(':', 2)
+        if len(parts) != 3:
+            return False
+        user_id, expire_time_str, signature = parts
+        expire_time = int(expire_time_str)
+        # 检查过期
+        if time.time() > expire_time:
+            return False
+        # 验证签名
+        payload = f'{user_id}:{expire_time_str}'
+        expected_sig = hmac.new(
+            app.secret_key.encode(),
+            payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(signature, expected_sig)
+    except Exception:
         return False
+
+def get_api_user():
+    """从请求头获取并验证 API 用户，返回 (user_id, error_response)"""
     auth_header = request.headers.get('Authorization', '')
+    token = None
     if auth_header.startswith('Bearer '):
-        return auth_header[7:] == API_KEY
-    return request.headers.get('X-API-Key') == API_KEY
+        token = auth_header[7:]
+    else:
+        token = request.headers.get('X-API-Token')
+    if not token:
+        return None, (jsonify({'success': False, 'error': '未提供 Token'}), 401)
+    if not verify_api_token(token):
+        return None, (jsonify({'success': False, 'error': 'Token 无效或已过期'}), 401)
+    return 'api_user', None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -512,18 +557,56 @@ def toggle_disposition():
 
 # ========== 程序化调用 API v1 ==========
 
+@app.route('/api/v1/auth', methods=['POST'])
+def api_v1_auth():
+    """
+    API 认证：用 PIN 码获取 Token
+
+    请求体：
+        { "pin": "123456" }
+
+    响应：
+        { "success": true, "token": "xxx", "expire_in": 86400 }
+    """
+    data = request.get_json() or {}
+    pin = data.get('pin', '')
+
+    if not pin:
+        return jsonify({'success': False, 'error': '缺少 pin'}), 400
+
+    # IP 限流检查
+    ip = get_client_ip()
+    if is_ip_locked(ip):
+        return jsonify({'success': False, 'error': '尝试次数过多，请稍后再试'}), 429
+
+    if not check_pin(pin):
+        record_failed_attempt(ip)
+        attempts_left = MAX_ATTEMPTS - load_login_attempts().get(ip, {}).get('count', 0)
+        if attempts_left <= 0:
+            return jsonify({'success': False, 'error': '尝试次数过多，请 5 分钟后再试'}), 429
+        return jsonify({'success': False, 'error': f'PIN 错误，剩余尝试次数: {attempts_left}'}), 401
+
+    # PIN 正确，生成 Token
+    clear_failed_attempts(ip)
+    token = generate_api_token(pin)
+    return jsonify({
+        'success': True,
+        'token': token,
+        'expire_in': TOKEN_EXPIRE_HOURS * 3600
+    })
+
 @app.route('/api/v1/upload', methods=['POST'])
 def api_v1_upload():
     """
-    程序化上传文件 API（需要 API Key 认证）
+    程序化上传文件 API（需要 Token 认证）
 
     支持两种上传方式：
     1. multipart/form-data: 上传一个或多个文件，字段名 'file' 或 'files'
     2. JSON + base64: 单文件上传，适合小文件（<4.5MB）
 
     请求头：
-        Authorization: Bearer <api_key>
-        或 X-API-Key: <api_key>
+        Authorization: Bearer <token>
+        或 X-API-Token: <token>
 
     multipart/form-data 方式：
         file: 文件内容
@@ -552,11 +635,9 @@ def api_v1_upload():
             }
         }
     """
-    if not verify_api_key():
-        return jsonify({
-            'success': False,
-            'error': '未提供有效的 API Key'
-        }), 401
+    user, error = get_api_user()
+    if error:
+        return error
 
     disposition = request.form.get('disposition', 'inline') if request.form else 'inline'
     if disposition not in ('inline', 'attachment'):
