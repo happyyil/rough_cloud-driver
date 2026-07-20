@@ -23,7 +23,10 @@
     <form id="uploadForm" method="post" enctype="multipart/form-data">
         <input type="file" id="fileInput" name="file" multiple required>
         <div id="fileInfo"></div>
-        <br>
+        <div style="margin: 15px 0; font-size: 14px; color: #666;">
+            <label><input type="radio" name="disposition" value="inline" checked> 浏览器预览</label>
+            <label style="margin-left: 15px;"><input type="radio" name="disposition" value="attachment"> 直接下载</label>
+        </div>
         <button type="submit" id="uploadBtn">立即上传</button>
     </form>
     
@@ -85,6 +88,7 @@
 
                 const formData = new FormData();
                 formData.append('files', file);
+                formData.append('disposition', document.querySelector('input[name="disposition"]:checked').value);
 
                 try {
                     const response = await fetch('/api/upload', {
@@ -151,7 +155,8 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
                     filename: file.name,
-                    contentType: file.type || 'application/octet-stream'
+                    contentType: file.type || 'application/octet-stream',
+                    disposition: document.querySelector('input[name="disposition"]:checked').value
                 })
             });
 

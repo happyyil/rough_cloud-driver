@@ -26,6 +26,8 @@
         .file-meta { color: #888; font-size: 13px; margin-top: 4px; }
         a { text-decoration: none; color: #007BFF; font-weight: bold; }
         a:hover { text-decoration: underline; }
+        .toggle-btn { padding: 4px 10px; font-size: 12px; border: 1px solid #ccc; background: #fff; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+        .toggle-btn:hover { background: #f0f0f0; }
     </style>
 </head>
 <body>
@@ -47,6 +49,9 @@
                         {% if file.uploaded_at %} · {{ file.uploaded_at[:10] }} {{ file.uploaded_at[11:19] }}{% endif %}
                     </div>
                 </div>
+                <button class="toggle-btn" onclick="toggleDisposition(this, '{{ file.token }}')" title="切换预览/下载">
+                    {{ '👁 预览' if file.disposition == 'inline' else '⬇ 下载' }}
+                </button>
             </li>
         {% else %}
             <li>目前还没有人上传文件。</li>
@@ -54,6 +59,20 @@
     </ul>
     
     <p><a href="{{ url_for('index') }}">← 返回上传页面</a></p>
+    <script>
+        async function toggleDisposition(btn, token) {
+            const res = await fetch('/api/disposition', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ token: token })
+            });
+            const data = await res.json();
+            if (data.token) {
+                btn.textContent = data.disposition === 'inline' ? '👁 预览' : '⬇ 下载';
+                btn.closest('li').querySelector('a').href = '/d/' + data.token;
+            }
+        }
+    </script>
     <script src="/_vercel/insights/script.js" defer></script>
 </body>
 </html>

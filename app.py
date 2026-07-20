@@ -12,6 +12,9 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', os.urandom(32).hex())
 
+# API Key 配置（用于程序化调用）
+API_KEY = os.getenv('API_KEY')
+
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3'}
 PIN_HASH = os.getenv('PIN_HASH')
 
@@ -46,21 +49,23 @@ LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '
 
 # ========== 下载链接编码 ==========
 
-def encode_download_token(original_name, stored_name, storage):
-    """将原始文件名+存储文件名+存储类型编码为 URL 安全的 token"""
-    payload = f'{original_name}:{stored_name}:{storage}'
+def encode_download_token(original_name, stored_name, storage, disposition='inline'):
+    """将原始文件名+存储文件名+存储类型+下载方式编码为 URL 安全的 token"""
+    payload = f'{original_name}:{stored_name}:{storage}:{disposition}'
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip('=')
 
 def decode_download_token(token):
-    """解码 token，返回 (original_name, stored_name, storage) 或 None"""
+    """解码 token，返回 (original_name, stored_name, storage, disposition) 或 None"""
     try:
         padding = 4 - len(token) % 4
         if padding != 4:
             token += '=' * padding
         payload = base64.urlsafe_b64decode(token.encode()).decode()
-        parts = payload.rsplit(':', 2)
+        parts = payload.rsplit(':', 3)
+        if len(parts) == 4:
+            return parts[0], parts[1], parts[2], parts[3]
         if len(parts) == 3:
-            return parts[0], parts[1], parts[2]
+            return parts[0], parts[1], parts[2], 'inline'
         return None
     except Exception:
         return None
@@ -125,6 +130,15 @@ def check_pin(pin):
         return True
     pin_hash = hashlib.sha256(pin.encode()).hexdigest()
     return pin_hash == PIN_HASH
+
+def verify_api_key():
+    """验证 API Key，返回 True/False"""
+    if not API_KEY:
+        return False
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        return auth_header[7:] == API_KEY
+    return request.headers.get('X-API-Key') == API_KEY
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -193,6 +207,9 @@ def get_presigned_url():
     
     data = request.get_json() or {}
     filename = data.get('filename', '')
+    disposition = data.get('disposition', 'inline')
+    if disposition not in ('inline', 'attachment'):
+        disposition = 'inline'
     
     if not filename or not allowed_file(filename):
         return jsonify({'error': '不支持的文件类型'}), 400
@@ -213,7 +230,7 @@ def get_presigned_url():
             ExpiresIn=900
         )
 
-        token = encode_download_token(filename, unique_name, 'r2')
+        token = encode_download_token(filename, unique_name, 'r2', disposition)
 
         return jsonify({
             'presignedUrl': presigned_url,
@@ -236,6 +253,10 @@ def upload_files():
     files = request.files.getlist('files')
     if not files or all(f.filename == '' for f in files):
         return jsonify({'success': False, 'error': '没有选择文件'}), 400
+
+    disposition = request.form.get('disposition', 'inline')
+    if disposition not in ('inline', 'attachment'):
+        disposition = 'inline'
 
     uploaded = []
     errors = []
@@ -283,7 +304,7 @@ def upload_files():
                 result_url = get_r2_url(key)
                 storage = 'r2'
 
-            token = encode_download_token(original_filename, filename, storage)
+            token = encode_download_token(original_filename, filename, storage, disposition)
             uploaded.append({'name': original_filename, 'download_url': f'/d/{token}', 'storage': storage})
         except Exception as e:
             errors.append(f'{original_filename}: {str(e)}')
@@ -404,7 +425,8 @@ def teacher():
                 'size': blob.get('size', 0),
                 'uploaded_at': blob.get('uploadedAt', ''),
                 'storage': 'blob',
-                'token': token
+                'token': token,
+                'disposition': 'inline'
             })
     except Exception as e:
         pass
@@ -433,7 +455,8 @@ def teacher():
                         'size': obj['Size'],
                         'uploaded_at': obj['LastModified'].isoformat(),
                         'storage': 'r2',
-                        'token': encode_download_token(filename, filename, 'r2')
+                        'token': encode_download_token(filename, filename, 'r2'),
+                        'disposition': 'inline'
                     })
 
                 if response.get('IsTruncated'):
@@ -456,7 +479,7 @@ def download_file(token):
     result = decode_download_token(token)
     if not result:
         return '无效的链接', 400
-    original_name, stored_name, storage = result
+    original_name, stored_name, storage, disposition = result
 
     if storage == 'blob':
         blob_files = blob_list()
@@ -464,15 +487,207 @@ def download_file(token):
             if blob.get('pathname') == f'uploads/{stored_name}':
                 resp = requests.get(blob.get('url', ''), timeout=60)
                 response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-                response.headers['Content-Disposition'] = f'attachment; filename="{original_name}"'
+                response.headers['Content-Disposition'] = f'{disposition}; filename="{original_name}"'
                 return response
         return '文件不存在', 404
     else:
         url = get_r2_url(f'uploads/{stored_name}')
         resp = requests.get(url, timeout=60)
         response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-        response.headers['Content-Disposition'] = f'attachment; filename="{original_name}"'
+        response.headers['Content-Disposition'] = f'{disposition}; filename="{original_name}"'
         return response
+
+@app.route('/api/disposition', methods=['POST'])
+def toggle_disposition():
+    """切换文件的预览/下载模式，返回新的 token"""
+    data = request.get_json() or {}
+    token = data.get('token', '')
+    result = decode_download_token(token)
+    if not result:
+        return jsonify({'error': '无效的 token'}), 400
+    original_name, stored_name, storage, disposition = result
+    new_disposition = 'attachment' if disposition == 'inline' else 'inline'
+    new_token = encode_download_token(original_name, stored_name, storage, new_disposition)
+    return jsonify({'token': new_token, 'disposition': new_disposition})
+
+# ========== 程序化调用 API v1 ==========
+
+@app.route('/api/v1/upload', methods=['POST'])
+def api_v1_upload():
+    """
+    程序化上传文件 API（需要 API Key 认证）
+
+    支持两种上传方式：
+    1. multipart/form-data: 上传一个或多个文件，字段名 'file' 或 'files'
+    2. JSON + base64: 单文件上传，适合小文件（<4.5MB）
+
+    请求头：
+        Authorization: Bearer <api_key>
+        或 X-API-Key: <api_key>
+
+    multipart/form-data 方式：
+        file: 文件内容
+        disposition: 'inline'（默认）或 'attachment'
+
+    JSON base64 方式：
+        {
+            "filename": "test.txt",
+            "content": "base64编码的内容",
+            "content_type": "text/plain",
+            "disposition": "inline"
+        }
+
+    响应格式：
+        {
+            "success": true,
+            "data": {
+                "files": [
+                    {
+                        "original_name": "test.txt",
+                        "stored_name": "1234567890.txt",
+                        "download_url": "/d/xxx",
+                        "storage": "blob"
+                    }
+                ]
+            }
+        }
+    """
+    if not verify_api_key():
+        return jsonify({
+            'success': False,
+            'error': '未提供有效的 API Key'
+        }), 401
+
+    disposition = request.form.get('disposition', 'inline') if request.form else 'inline'
+    if disposition not in ('inline', 'attachment'):
+        disposition = 'inline'
+
+    # 方式一：JSON base64 上传
+    if request.is_json:
+        data = request.get_json()
+        filename = data.get('filename', '')
+        content_b64 = data.get('content', '')
+        content_type = data.get('content_type', 'application/octet-stream')
+
+        if not filename or not content_b64:
+            return jsonify({'success': False, 'error': '缺少 filename 或 content'}), 400
+
+        if '.' not in filename:
+            return jsonify({'success': False, 'error': '文件名必须包含扩展名'}), 400
+
+        ext = filename.rsplit('.', 1)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            return jsonify({
+                'success': False,
+                'error': f'不支持的文件类型 .{ext}，允许: {", ".join(sorted(ALLOWED_EXTENSIONS))}'
+            }), 400
+
+        try:
+            file_data = base64.b64decode(content_b64)
+        except Exception:
+            return jsonify({'success': False, 'error': 'content 不是有效的 base64 编码'}), 400
+
+        timestamp = str(int(time.time()))
+        stored_name = f'{timestamp}.{ext}'
+
+        try:
+            if len(file_data) <= LARGE_FILE_THRESHOLD:
+                if not BLOB_READ_WRITE_TOKEN:
+                    return jsonify({'success': False, 'error': '存储服务未配置'}), 500
+                blob_upload(stored_name, file_data, content_type)
+                storage = 'blob'
+            else:
+                if not s3_client:
+                    return jsonify({'success': False, 'error': '存储服务未配置'}), 500
+                s3_client.put_object(
+                    Bucket=R2_BUCKET_NAME,
+                    Key=f'uploads/{stored_name}',
+                    Body=file_data,
+                    ContentType=content_type
+                )
+                storage = 'r2'
+
+            token = encode_download_token(filename, stored_name, storage, disposition)
+            return jsonify({
+                'success': True,
+                'data': {
+                    'files': [{
+                        'original_name': filename,
+                        'stored_name': stored_name,
+                        'download_url': f'/d/{token}',
+                        'storage': storage
+                    }]
+                }
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    # 方式二：multipart/form-data 上传
+    files = request.files.getlist('files') or ([request.files['file']] if 'file' in request.files else [])
+    if not files or all(f.filename == '' for f in files):
+        return jsonify({'success': False, 'error': '没有提供文件'}), 400
+
+    uploaded = []
+    errors = []
+
+    for file in files:
+        if file.filename == '':
+            continue
+
+        original_filename = file.filename
+        if '.' not in original_filename:
+            errors.append({'filename': original_filename, 'error': '文件名必须包含扩展名'})
+            continue
+
+        ext = original_filename.rsplit('.', 1)[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            errors.append({'filename': original_filename, 'error': f'不支持的文件类型 .{ext}'})
+            continue
+
+        timestamp = str(int(time.time()))
+        stored_name = f'{timestamp}.{ext}'
+        file_data = file.read()
+        content_type = file.content_type or 'application/octet-stream'
+
+        try:
+            if len(file_data) <= LARGE_FILE_THRESHOLD:
+                if not BLOB_READ_WRITE_TOKEN:
+                    errors.append({'filename': original_filename, 'error': '存储服务未配置'})
+                    continue
+                blob_upload(stored_name, file_data, content_type)
+                storage = 'blob'
+            else:
+                if not s3_client:
+                    errors.append({'filename': original_filename, 'error': '存储服务未配置'})
+                    continue
+                s3_client.put_object(
+                    Bucket=R2_BUCKET_NAME,
+                    Key=f'uploads/{stored_name}',
+                    Body=file_data,
+                    ContentType=content_type
+                )
+                storage = 'r2'
+
+            token = encode_download_token(original_filename, stored_name, storage, disposition)
+            uploaded.append({
+                'original_name': original_filename,
+                'stored_name': stored_name,
+                'download_url': f'/d/{token}',
+                'storage': storage
+            })
+        except Exception as e:
+            errors.append({'filename': original_filename, 'error': str(e)})
+
+    if errors and not uploaded:
+        return jsonify({'success': False, 'error': '所有文件上传失败', 'details': errors}), 500
+
+    return jsonify({
+        'success': True,
+        'data': {
+            'files': uploaded,
+            'errors': errors if errors else None
+        }
+    })
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000)
