@@ -50,23 +50,25 @@ LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '
 
 # ========== 下载链接编码 ==========
 
-def encode_download_token(original_name, stored_name, storage, disposition='inline'):
-    """将原始文件名+存储文件名+存储类型+下载方式编码为 URL 安全的 token"""
-    payload = f'{original_name}:{stored_name}:{storage}:{disposition}'
+def encode_download_token(original_name, stored_name, storage, disposition='inline', path=''):
+    """将原始文件名+存储文件名+存储类型+下载方式+路径编码为 URL 安全的 token"""
+    payload = f'{original_name}:{stored_name}:{storage}:{disposition}:{path}'
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip('=')
 
 def decode_download_token(token):
-    """解码 token，返回 (original_name, stored_name, storage, disposition) 或 None"""
+    """解码 token，返回 (original_name, stored_name, storage, disposition, path) 或 None"""
     try:
         padding = 4 - len(token) % 4
         if padding != 4:
             token += '=' * padding
         payload = base64.urlsafe_b64decode(token.encode()).decode()
-        parts = payload.rsplit(':', 3)
+        parts = payload.rsplit(':', 4)
+        if len(parts) == 5:
+            return parts[0], parts[1], parts[2], parts[3], parts[4]
         if len(parts) == 4:
-            return parts[0], parts[1], parts[2], parts[3]
+            return parts[0], parts[1], parts[2], parts[3], ''
         if len(parts) == 3:
-            return parts[0], parts[1], parts[2], 'inline'
+            return parts[0], parts[1], parts[2], 'inline', ''
         return None
     except Exception:
         return None
@@ -188,6 +190,30 @@ def get_api_user():
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def is_path_safe(path):
+    """验证路径安全性，防止路径遍历攻击"""
+    if not path:
+        return True
+    # 检查路径遍历攻击
+    if '..' in path or path.startswith('\\'):
+        return False
+    # 允许 /v/ 开头的固定路径
+    if path.startswith('/v/'):
+        # 只允许 /v/ + 文件名（字母、数字、下划线、连字符、点）
+        import re
+        return bool(re.match(r'^/v/[a-zA-Z0-9_\-\.]+$', path))
+    # 普通路径不能以 / 开头
+    if path.startswith('/'):
+        return False
+    # 检查路径长度
+    if len(path) > 255:
+        return False
+    # 检查路径字符（只允许字母、数字、下划线、连字符、斜杠、点）
+    import re
+    if not re.match(r'^[a-zA-Z0-9_\-/\.]+$', path):
+        return False
+    return True
+
 def get_r2_url(key):
     """获取 R2 文件的公共 URL"""
     if R2_PUBLIC_URL:
@@ -196,12 +222,10 @@ def get_r2_url(key):
 
 # ========== Vercel Blob 操作 ==========
 
-def blob_upload(filename, file_data, content_type):
+def blob_upload(pathname, file_data, content_type):
     """上传文件到 Vercel Blob"""
     if not BLOB_READ_WRITE_TOKEN:
         raise Exception('BLOB_READ_WRITE_TOKEN 未配置')
-
-    pathname = f'uploads/{filename}'
 
     headers = {
         'Authorization': f'Bearer {BLOB_READ_WRITE_TOKEN}',
@@ -221,7 +245,7 @@ def blob_upload(filename, file_data, content_type):
 
     return response.json()
 
-def blob_list():
+def blob_list(prefix='uploads/'):
     """列出 Vercel Blob 中的所有文件"""
     if not BLOB_READ_WRITE_TOKEN:
         return []
@@ -231,7 +255,7 @@ def blob_list():
     }
 
     response = requests.get(
-        'https://blob.vercel-storage.com/?prefix=uploads/',
+        f'https://blob.vercel-storage.com/?prefix={prefix}',
         headers=headers,
         timeout=30
     )
@@ -303,6 +327,11 @@ def upload_files():
     if disposition not in ('inline', 'attachment'):
         disposition = 'inline'
 
+    # 获取自定义路径参数
+    custom_path = request.form.get('path', '').strip()
+    if custom_path and not is_path_safe(custom_path):
+        return jsonify({'success': False, 'error': '无效的路径'}), 400
+
     uploaded = []
     errors = []
 
@@ -325,13 +354,26 @@ def upload_files():
         file_data = file.read()
         content_type = file.content_type or 'application/octet-stream'
 
+        # 检查是否是固定路径 (/v/{filename})
+        is_fixed_path = custom_path and custom_path.startswith('/v/')
+        if is_fixed_path:
+            # 固定路径：使用原始文件名
+            fixed_filename = custom_path[3:]  # 去掉 '/v/' 前缀
+            storage_path = f'/v/{fixed_filename}'
+        else:
+            # 普通路径：使用时间戳文件名
+            if custom_path:
+                storage_path = f'{custom_path}/{filename}'
+            else:
+                storage_path = f'uploads/{filename}'
+
         try:
             if len(file_data) <= LARGE_FILE_THRESHOLD:
                 # 小文件上传到 Vercel Blob
                 if not BLOB_READ_WRITE_TOKEN:
                     errors.append(f'{original_filename}: BLOB_READ_WRITE_TOKEN 未配置')
                     continue
-                result = blob_upload(filename, file_data, content_type)
+                result = blob_upload(storage_path, file_data, content_type)
                 result_url = result.get('url')
                 storage = 'blob'
             else:
@@ -339,18 +381,24 @@ def upload_files():
                 if not s3_client:
                     errors.append(f'{original_filename}: R2 未配置')
                     continue
-                key = f'uploads/{filename}'
                 s3_client.put_object(
                     Bucket=R2_BUCKET_NAME,
-                    Key=key,
+                    Key=storage_path,
                     Body=file_data,
                     ContentType=content_type
                 )
-                result_url = get_r2_url(key)
+                result_url = get_r2_url(storage_path)
                 storage = 'r2'
 
-            token = encode_download_token(original_filename, filename, storage, disposition)
-            uploaded.append({'name': original_filename, 'download_url': f'/d/{token}', 'storage': storage})
+            if is_fixed_path:
+                # 固定路径：下载链接直接是 /v/{filename}
+                download_url = f'/v/{fixed_filename}'
+            else:
+                # 普通路径：下载链接是 /d/{token}
+                token = encode_download_token(original_filename, filename, storage, disposition, custom_path)
+                download_url = f'/d/{token}'
+
+            uploaded.append({'name': original_filename, 'download_url': download_url, 'storage': storage, 'path': custom_path})
         except Exception as e:
             errors.append(f'{original_filename}: {str(e)}')
 
@@ -455,15 +503,26 @@ def teacher():
 
     files = []
 
-    # 从 Vercel Blob 获取文件
+    # 从 Vercel Blob 获取文件（列出所有文件）
     try:
-        blob_files = blob_list()
+        blob_files = blob_list('')
         for blob in blob_files:
             pathname = blob.get('pathname', '')
-            if not pathname.startswith('uploads/'):
+            # 跳过非文件（如目录）
+            if not pathname or pathname.endswith('/'):
                 continue
-            filename = pathname.replace('uploads/', '', 1)
-            token = encode_download_token(filename, filename, 'blob')
+            
+            # 解析路径和文件名
+            if '/' in pathname:
+                path_parts = pathname.rsplit('/', 1)
+                if len(path_parts) == 2:
+                    path, filename = path_parts
+                else:
+                    path, filename = '', pathname
+            else:
+                path, filename = '', pathname
+            
+            token = encode_download_token(filename, filename, 'blob', 'inline', path)
             files.append({
                 'name': filename,
                 'url': blob.get('url'),
@@ -471,19 +530,19 @@ def teacher():
                 'uploaded_at': blob.get('uploadedAt', ''),
                 'storage': 'blob',
                 'token': token,
-                'disposition': 'inline'
+                'disposition': 'inline',
+                'path': path
             })
     except Exception as e:
         pass
 
-    # 从 R2 获取文件
+    # 从 R2 获取文件（列出所有文件）
     if s3_client:
         try:
             continuation_token = None
             while True:
                 list_kwargs = {
                     'Bucket': R2_BUCKET_NAME,
-                    'Prefix': 'uploads/',
                     'MaxKeys': 1000
                 }
                 if continuation_token:
@@ -493,15 +552,29 @@ def teacher():
 
                 for obj in response.get('Contents', []):
                     key = obj['Key']
-                    filename = key.replace('uploads/', '', 1)
+                    # 跳过目录
+                    if key.endswith('/'):
+                        continue
+                    
+                    # 解析路径和文件名
+                    if '/' in key:
+                        path_parts = key.rsplit('/', 1)
+                        if len(path_parts) == 2:
+                            path, filename = path_parts
+                        else:
+                            path, filename = '', key
+                    else:
+                        path, filename = '', key
+                    
                     files.append({
                         'name': filename,
                         'url': get_r2_url(key),
                         'size': obj['Size'],
                         'uploaded_at': obj['LastModified'].isoformat(),
                         'storage': 'r2',
-                        'token': encode_download_token(filename, filename, 'r2'),
-                        'disposition': 'inline'
+                        'token': encode_download_token(filename, filename, 'r2', 'inline', path),
+                        'disposition': 'inline',
+                        'path': path
                     })
 
                 if response.get('IsTruncated'):
@@ -524,23 +597,65 @@ def download_file(token):
     result = decode_download_token(token)
     if not result:
         return '无效的链接', 400
-    original_name, stored_name, storage, disposition = result
+    original_name, stored_name, storage, disposition, path = result
+
+    # 构建存储路径
+    if path:
+        storage_path = f'{path}/{stored_name}'
+    else:
+        storage_path = f'uploads/{stored_name}'
 
     if storage == 'blob':
-        blob_files = blob_list()
+        # 对于自定义路径，需要列出对应前缀的文件
+        prefix = f'{path}/' if path else 'uploads/'
+        blob_files = blob_list(prefix)
         for blob in blob_files:
-            if blob.get('pathname') == f'uploads/{stored_name}':
+            if blob.get('pathname') == storage_path:
                 resp = requests.get(blob.get('url', ''), timeout=60)
                 response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
                 response.headers['Content-Disposition'] = f'{disposition}; filename="{original_name}"'
                 return response
         return '文件不存在', 404
     else:
-        url = get_r2_url(f'uploads/{stored_name}')
+        url = get_r2_url(storage_path)
         resp = requests.get(url, timeout=60)
         response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
         response.headers['Content-Disposition'] = f'{disposition}; filename="{original_name}"'
         return response
+
+@app.route('/v/<filename>')
+def download_fixed_path(filename):
+    """固定路径下载：/v/{filename} 直接返回文件"""
+    # 安全检查：只允许字母、数字、下划线、连字符、点
+    import re
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+        return '无效的文件名', 400
+
+    storage_path = f'/v/{filename}'
+
+    # 尝试从 Vercel Blob 获取
+    if BLOB_READ_WRITE_TOKEN:
+        blob_files = blob_list('/v/')
+        for blob in blob_files:
+            if blob.get('pathname') == storage_path:
+                resp = requests.get(blob.get('url', ''), timeout=60)
+                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
+                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                return response
+
+    # 尝试从 R2 获取
+    if s3_client:
+        try:
+            url = get_r2_url(storage_path)
+            resp = requests.get(url, timeout=60)
+            if resp.status_code == 200:
+                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
+                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                return response
+        except Exception:
+            pass
+
+    return '文件不存在', 404
 
 @app.route('/api/disposition', methods=['POST'])
 def toggle_disposition():
@@ -550,9 +665,9 @@ def toggle_disposition():
     result = decode_download_token(token)
     if not result:
         return jsonify({'error': '无效的 token'}), 400
-    original_name, stored_name, storage, disposition = result
+    original_name, stored_name, storage, disposition, path = result
     new_disposition = 'attachment' if disposition == 'inline' else 'inline'
-    new_token = encode_download_token(original_name, stored_name, storage, new_disposition)
+    new_token = encode_download_token(original_name, stored_name, storage, new_disposition, path)
     return jsonify({'token': new_token, 'disposition': new_disposition})
 
 # ========== 程序化调用 API v1 ==========
@@ -611,13 +726,17 @@ def api_v1_upload():
     multipart/form-data 方式：
         file: 文件内容
         disposition: 'inline'（默认）或 'attachment'
+        path: 自定义存储路径（可选）
+            - 普通路径：'documents/2024' → 下载链接 /d/{token}
+            - 固定路径：'/v/report.pdf' → 下载链接 /v/report.pdf
 
     JSON base64 方式：
         {
             "filename": "test.txt",
             "content": "base64编码的内容",
             "content_type": "text/plain",
-            "disposition": "inline"
+            "disposition": "inline",
+            "path": "/v/report.pdf"
         }
 
     响应格式：
@@ -628,8 +747,9 @@ def api_v1_upload():
                     {
                         "original_name": "test.txt",
                         "stored_name": "1234567890.txt",
-                        "download_url": "/d/xxx",
-                        "storage": "blob"
+                        "download_url": "/v/report.pdf",
+                        "storage": "blob",
+                        "path": "/v/report.pdf"
                     }
                 ]
             }
@@ -649,6 +769,7 @@ def api_v1_upload():
         filename = data.get('filename', '')
         content_b64 = data.get('content', '')
         content_type = data.get('content_type', 'application/octet-stream')
+        custom_path = data.get('path', '').strip()
 
         if not filename or not content_b64:
             return jsonify({'success': False, 'error': '缺少 filename 或 content'}), 400
@@ -663,6 +784,9 @@ def api_v1_upload():
                 'error': f'不支持的文件类型 .{ext}，允许: {", ".join(sorted(ALLOWED_EXTENSIONS))}'
             }), 400
 
+        if custom_path and not is_path_safe(custom_path):
+            return jsonify({'success': False, 'error': '无效的路径'}), 400
+
         try:
             file_data = base64.b64decode(content_b64)
         except Exception:
@@ -671,32 +795,53 @@ def api_v1_upload():
         timestamp = str(int(time.time()))
         stored_name = f'{timestamp}.{ext}'
 
+        # 检查是否是固定路径 (/v/{filename})
+        is_fixed_path = custom_path and custom_path.startswith('/v/')
+        if is_fixed_path:
+            # 固定路径：使用原始文件名
+            fixed_filename = custom_path[3:]  # 去掉 '/v/' 前缀
+            storage_path = f'/v/{fixed_filename}'
+        else:
+            # 普通路径：使用时间戳文件名
+            if custom_path:
+                storage_path = f'{custom_path}/{stored_name}'
+            else:
+                storage_path = f'uploads/{stored_name}'
+
         try:
             if len(file_data) <= LARGE_FILE_THRESHOLD:
                 if not BLOB_READ_WRITE_TOKEN:
                     return jsonify({'success': False, 'error': '存储服务未配置'}), 500
-                blob_upload(stored_name, file_data, content_type)
+                blob_upload(storage_path, file_data, content_type)
                 storage = 'blob'
             else:
                 if not s3_client:
                     return jsonify({'success': False, 'error': '存储服务未配置'}), 500
                 s3_client.put_object(
                     Bucket=R2_BUCKET_NAME,
-                    Key=f'uploads/{stored_name}',
+                    Key=storage_path,
                     Body=file_data,
                     ContentType=content_type
                 )
                 storage = 'r2'
 
-            token = encode_download_token(filename, stored_name, storage, disposition)
+            if is_fixed_path:
+                # 固定路径：下载链接直接是 /v/{filename}
+                download_url = f'/v/{fixed_filename}'
+            else:
+                # 普通路径：下载链接是 /d/{token}
+                token = encode_download_token(filename, stored_name, storage, disposition, custom_path)
+                download_url = f'/d/{token}'
+
             return jsonify({
                 'success': True,
                 'data': {
                     'files': [{
                         'original_name': filename,
                         'stored_name': stored_name,
-                        'download_url': f'/d/{token}',
-                        'storage': storage
+                        'download_url': download_url,
+                        'storage': storage,
+                        'path': custom_path
                     }]
                 }
             })
@@ -707,6 +852,11 @@ def api_v1_upload():
     files = request.files.getlist('files') or ([request.files['file']] if 'file' in request.files else [])
     if not files or all(f.filename == '' for f in files):
         return jsonify({'success': False, 'error': '没有提供文件'}), 400
+
+    # 获取自定义路径参数
+    custom_path = request.form.get('path', '').strip()
+    if custom_path and not is_path_safe(custom_path):
+        return jsonify({'success': False, 'error': '无效的路径'}), 400
 
     uploaded = []
     errors = []
@@ -730,12 +880,25 @@ def api_v1_upload():
         file_data = file.read()
         content_type = file.content_type or 'application/octet-stream'
 
+        # 检查是否是固定路径 (/v/{filename})
+        is_fixed_path = custom_path and custom_path.startswith('/v/')
+        if is_fixed_path:
+            # 固定路径：使用原始文件名
+            fixed_filename = custom_path[3:]  # 去掉 '/v/' 前缀
+            storage_path = f'/v/{fixed_filename}'
+        else:
+            # 普通路径：使用时间戳文件名
+            if custom_path:
+                storage_path = f'{custom_path}/{stored_name}'
+            else:
+                storage_path = f'uploads/{stored_name}'
+
         try:
             if len(file_data) <= LARGE_FILE_THRESHOLD:
                 if not BLOB_READ_WRITE_TOKEN:
                     errors.append({'filename': original_filename, 'error': '存储服务未配置'})
                     continue
-                blob_upload(stored_name, file_data, content_type)
+                blob_upload(storage_path, file_data, content_type)
                 storage = 'blob'
             else:
                 if not s3_client:
@@ -743,18 +906,26 @@ def api_v1_upload():
                     continue
                 s3_client.put_object(
                     Bucket=R2_BUCKET_NAME,
-                    Key=f'uploads/{stored_name}',
+                    Key=storage_path,
                     Body=file_data,
                     ContentType=content_type
                 )
                 storage = 'r2'
 
-            token = encode_download_token(original_filename, stored_name, storage, disposition)
+            if is_fixed_path:
+                # 固定路径：下载链接直接是 /v/{filename}
+                download_url = f'/v/{fixed_filename}'
+            else:
+                # 普通路径：下载链接是 /d/{token}
+                token = encode_download_token(original_filename, stored_name, storage, disposition, custom_path)
+                download_url = f'/d/{token}'
+
             uploaded.append({
                 'original_name': original_filename,
                 'stored_name': stored_name,
-                'download_url': f'/d/{token}',
-                'storage': storage
+                'download_url': download_url,
+                'storage': storage,
+                'path': custom_path
             })
         except Exception as e:
             errors.append({'filename': original_filename, 'error': str(e)})
