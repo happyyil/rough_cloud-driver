@@ -296,7 +296,7 @@ def get_presigned_url():
     is_fixed_path = custom_path and custom_path.startswith('/v/')
     if is_fixed_path:
         fixed_filename = custom_path[3:]
-        key = f'/v/{fixed_filename}'
+        key = f'v/{fixed_filename}'  # R2 key 不以 / 开头
     else:
         if custom_path:
             key = f'{custom_path}/{unique_name}'
@@ -379,12 +379,14 @@ def upload_files():
             # 固定路径：使用原始文件名
             fixed_filename = custom_path[3:]  # 去掉 '/v/' 前缀
             storage_path = f'/v/{fixed_filename}'
+            r2_key = f'v/{fixed_filename}'  # R2 key 不以 / 开头
         else:
             # 普通路径：使用时间戳文件名
             if custom_path:
                 storage_path = f'{custom_path}/{filename}'
             else:
                 storage_path = f'uploads/{filename}'
+            r2_key = storage_path
 
         try:
             if len(file_data) <= LARGE_FILE_THRESHOLD:
@@ -402,7 +404,7 @@ def upload_files():
                     continue
                 s3_client.put_object(
                     Bucket=R2_BUCKET_NAME,
-                    Key=storage_path,
+                    Key=r2_key,
                     Body=file_data,
                     ContentType=content_type
                 )
@@ -651,6 +653,7 @@ def download_fixed_path(filename):
         return '无效的文件名', 400
 
     storage_path = f'/v/{filename}'
+    r2_key = f'v/{filename}'  # R2 key 不以 / 开头
 
     # 尝试从 Vercel Blob 获取
     if BLOB_READ_WRITE_TOKEN:
@@ -665,7 +668,7 @@ def download_fixed_path(filename):
     # 尝试从 R2 获取
     if s3_client:
         try:
-            url = get_r2_url(storage_path)
+            url = get_r2_url(r2_key)
             resp = requests.get(url, timeout=60)
             if resp.status_code == 200:
                 response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
@@ -820,12 +823,14 @@ def api_v1_upload():
             # 固定路径：使用原始文件名
             fixed_filename = custom_path[3:]  # 去掉 '/v/' 前缀
             storage_path = f'/v/{fixed_filename}'
+            r2_key = f'v/{fixed_filename}'  # R2 key 不以 / 开头
         else:
             # 普通路径：使用时间戳文件名
             if custom_path:
                 storage_path = f'{custom_path}/{stored_name}'
             else:
                 storage_path = f'uploads/{stored_name}'
+            r2_key = storage_path
 
         try:
             if len(file_data) <= LARGE_FILE_THRESHOLD:
@@ -838,7 +843,7 @@ def api_v1_upload():
                     return jsonify({'success': False, 'error': '存储服务未配置'}), 500
                 s3_client.put_object(
                     Bucket=R2_BUCKET_NAME,
-                    Key=storage_path,
+                    Key=r2_key,
                     Body=file_data,
                     ContentType=content_type
                 )
@@ -905,12 +910,14 @@ def api_v1_upload():
             # 固定路径：使用原始文件名
             fixed_filename = custom_path[3:]  # 去掉 '/v/' 前缀
             storage_path = f'/v/{fixed_filename}'
+            r2_key = f'v/{fixed_filename}'  # R2 key 不以 / 开头
         else:
             # 普通路径：使用时间戳文件名
             if custom_path:
                 storage_path = f'{custom_path}/{stored_name}'
             else:
                 storage_path = f'uploads/{stored_name}'
+            r2_key = storage_path
 
         try:
             if len(file_data) <= LARGE_FILE_THRESHOLD:
@@ -925,7 +932,7 @@ def api_v1_upload():
                     continue
                 s3_client.put_object(
                     Bucket=R2_BUCKET_NAME,
-                    Key=storage_path,
+                    Key=r2_key,
                     Body=file_data,
                     ContentType=content_type
                 )
