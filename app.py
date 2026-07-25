@@ -16,7 +16,7 @@ app.secret_key = os.getenv('SECRET_KEY', os.urandom(32).hex())
 # Token 配置
 TOKEN_EXPIRE_HOURS = 24  # Token 有效期
 
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3'}
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3', 'ogg'}
 PIN_HASH = os.getenv('PIN_HASH')
 
 # Vercel Blob 配置（小文件存储）
@@ -273,21 +273,36 @@ def get_presigned_url():
     """生成预签名上传 URL，客户端用此 URL 直传到 R2"""
     if not s3_client:
         return jsonify({'error': 'R2 未配置'}), 500
-    
+
     data = request.get_json() or {}
     filename = data.get('filename', '')
     disposition = data.get('disposition', 'inline')
     if disposition not in ('inline', 'attachment'):
         disposition = 'inline'
-    
+
     if not filename or not allowed_file(filename):
         return jsonify({'error': '不支持的文件类型'}), 400
-    
+
     ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
     timestamp = str(int(time.time()))
     unique_name = f'{timestamp}.{ext}' if ext else timestamp
-    key = f'uploads/{unique_name}'
-    
+
+    # 获取自定义路径参数
+    custom_path = data.get('path', '').strip()
+    if custom_path and not is_path_safe(custom_path):
+        return jsonify({'error': '无效的路径'}), 400
+
+    # 检查是否是固定路径 (/v/{filename})
+    is_fixed_path = custom_path and custom_path.startswith('/v/')
+    if is_fixed_path:
+        fixed_filename = custom_path[3:]
+        key = f'/v/{fixed_filename}'
+    else:
+        if custom_path:
+            key = f'{custom_path}/{unique_name}'
+        else:
+            key = f'uploads/{unique_name}'
+
     try:
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
@@ -299,15 +314,19 @@ def get_presigned_url():
             ExpiresIn=900
         )
 
-        token = encode_download_token(filename, unique_name, 'r2', disposition)
+        if is_fixed_path:
+            download_url = f'/v/{fixed_filename}'
+        else:
+            token = encode_download_token(filename, unique_name, 'r2', disposition, custom_path)
+            download_url = f'/d/{token}'
 
         return jsonify({
             'presignedUrl': presigned_url,
-            'downloadUrl': f'/d/{token}',
+            'downloadUrl': download_url,
             'key': key,
             'filename': unique_name
         })
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

@@ -219,11 +219,76 @@ curl -X POST https://your-domain.com/api/v1/upload \
 
 ---
 
+## 大文件上传（预签名 URL）
+
+Vercel 限制请求体最大 4.5MB。对于大文件，使用预签名 URL 直传 Cloudflare R2：
+
+### 普通路径
+
+```bash
+# Step 1: 获取预签名 URL
+curl -X POST https://your-domain.com/api/r2/presign \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"video.mp4","disposition":"inline","path":"videos/2024"}'
+
+# 响应：
+# {
+#   "presignedUrl": "https://xxx.r2.cloudflarestorage.com/...",
+#   "downloadUrl": "/d/xxx",
+#   "key": "videos/2024/1234567890.mp4",
+#   "filename": "1234567890.mp4"
+# }
+
+# Step 2: 使用预签名 URL 直传
+curl -X PUT "PRESIGNED_URL" \
+  -H "Content-Type: video/mp4" \
+  --data-binary "@large_video.mp4"
+```
+
+### 固定路径
+
+```bash
+# 获取预签名 URL（固定路径以 /v/ 开头）
+curl -X POST https://your-domain.com/api/r2/presign \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"credits.ogg","disposition":"inline","path":"/v/credits.ogg"}'
+
+# 直传后，下载链接直接是：https://your-domain.com/v/credits.ogg
+```
+
+---
+
+## 完整示例脚本（PowerShell - 大文件）
+
+```powershell
+$token = "YOUR_TOKEN"
+
+# Step 1: 获取预签名 URL
+$presignResponse = curl.exe -s -X POST "https://your-domain.com/api/r2/presign" `
+    -H "Authorization: Bearer $token" `
+    -H "Content-Type: application/json" `
+    -d '{"filename":"credits.ogg","disposition":"inline","path":"/v/credits.ogg"}'
+
+$presignData = $presignResponse | ConvertFrom-Json
+
+# Step 2: 上传文件（支持任意路径）
+curl.exe -X PUT $presignData.presignedUrl `
+    -H "Content-Type: audio/ogg" `
+    --data-binary "@D:\Downloads\minecraft\sounds\credits.ogg"
+
+Write-Host "下载链接: https://your-domain.com$($presignData.downloadUrl)"
+```
+
+---
+
 ## 注意事项
 
 1. **路径安全**：路径只允许字母、数字、下划线、连字符、斜杠、点
 2. **路径长度**：最大 255 字符
 3. **禁止路径遍历**：不能使用 `..`、`\` 开头
-4. **文件大小**：< 4.5MB 存储到 Vercel Blob，>= 4.5MB 存储到 Cloudflare R2
+4. **文件大小**：< 4.5MB 使用 `/api/v1/upload`，>= 4.5MB 使用 `/api/r2/presign` + 直传
 5. **固定路径**：以 `/v/` 开头的路径，下载链接直接是 `/v/{filename}`，适合创建永久链接
 6. **覆盖行为**：固定路径如果文件已存在，会被新文件覆盖
+7. **预签名 URL 有效期**：15 分钟内有效
