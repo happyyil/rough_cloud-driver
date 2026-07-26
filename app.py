@@ -134,10 +134,10 @@ def check_pin(pin):
     pin_hash = hashlib.sha256(pin.encode()).hexdigest()
     return pin_hash == PIN_HASH
 
-def generate_api_token(pin):
-    """生成 API Token（HMAC 签名，含过期时间）"""
-    expire_time = int(time.time()) + TOKEN_EXPIRE_HOURS * 3600
-    payload = f'api_user:{expire_time}'
+def _sign_token(user_id, expire_hours):
+    """生成 HMAC 签名 Token"""
+    expire_time = int(time.time()) + int(expire_hours * 3600)
+    payload = f'{user_id}:{expire_time}'
     signature = hmac.new(
         app.secret_key.encode(),
         payload.encode(),
@@ -146,8 +146,16 @@ def generate_api_token(pin):
     token_data = f'{payload}:{signature}'
     return base64.urlsafe_b64encode(token_data.encode()).decode().rstrip('=')
 
-def verify_api_token(token):
-    """验证 API Token，返回 True/False"""
+def generate_api_token(pin):
+    """生成 API Token（HMAC 签名，含过期时间）"""
+    return _sign_token('api_user', TOKEN_EXPIRE_HOURS)
+
+def generate_web_presign_token():
+    """网页端大文件上传用的短期 Token（仅可用于 /api/r2/presign）"""
+    return _sign_token('presign_web', 1)
+
+def verify_api_token(token, allowed_users=('api_user',)):
+    """验证 Token，返回 True/False。allowed_users 限制可用的 user_id。"""
     try:
         # 补全 base64 padding
         padding = 4 - len(token) % 4
@@ -158,6 +166,8 @@ def verify_api_token(token):
         if len(parts) != 3:
             return False
         user_id, expire_time_str, signature = parts
+        if user_id not in allowed_users:
+            return False
         expire_time = int(expire_time_str)
         # 检查过期
         if time.time() > expire_time:
@@ -173,19 +183,29 @@ def verify_api_token(token):
     except Exception:
         return False
 
+def _extract_bearer_token():
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        return auth_header[7:]
+    return request.headers.get('X-API-Token')
+
 def get_api_user():
     """从请求头获取并验证 API 用户，返回 (user_id, error_response)"""
-    auth_header = request.headers.get('Authorization', '')
-    token = None
-    if auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-    else:
-        token = request.headers.get('X-API-Token')
+    token = _extract_bearer_token()
     if not token:
         return None, (jsonify({'success': False, 'error': '未提供 Token'}), 401)
-    if not verify_api_token(token):
+    if not verify_api_token(token, allowed_users=('api_user',)):
         return None, (jsonify({'success': False, 'error': 'Token 无效或已过期'}), 401)
     return 'api_user', None
+
+def require_presign_auth():
+    """预签名接口认证：API Token 或网页短期 Token"""
+    token = _extract_bearer_token()
+    if not token:
+        return None, (jsonify({'success': False, 'error': '未提供 Token'}), 401)
+    if not verify_api_token(token, allowed_users=('api_user', 'presign_web')):
+        return None, (jsonify({'success': False, 'error': 'Token 无效或已过期'}), 401)
+    return 'presign_user', None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -270,7 +290,11 @@ def blob_list(prefix='uploads/'):
 
 @app.route('/api/r2/presign', methods=['POST'])
 def get_presigned_url():
-    """生成预签名上传 URL，客户端用此 URL 直传到 R2"""
+    """生成预签名上传 URL，客户端用此 URL 直传到 R2（需要 Token）"""
+    _, error = require_presign_auth()
+    if error:
+        return error
+
     if not s3_client:
         return jsonify({'error': 'R2 未配置'}), 500
 
@@ -473,7 +497,7 @@ def index():
         except Exception as e:
             return f'上传失败: {str(e)}'
     
-    return render_template('index.html')
+    return render_template('index.html', upload_token=generate_web_presign_token())
 
 @app.route('/teacher/verify', methods=['GET', 'POST'])
 def verify_pin():

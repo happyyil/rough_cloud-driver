@@ -37,6 +37,7 @@
     
     <script>
         const DIRECT_UPLOAD_LIMIT = 4.5 * 1024 * 1024;
+        const UPLOAD_TOKEN = {{ upload_token|tojson }};
 
         const uploadForm = document.getElementById('uploadForm');
         const fileInput = document.getElementById('fileInput');
@@ -152,7 +153,10 @@
         async function uploadSingleToR2(file) {
             const presignRes = await fetch('/api/r2/presign', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${UPLOAD_TOKEN}`
+                },
                 body: JSON.stringify({
                     filename: file.name,
                     contentType: file.type || 'application/octet-stream',

@@ -71,9 +71,24 @@ def upload_large_file(token, file_path, disposition="inline", path=""):
     headers = {"Authorization": f"Bearer {token}"}
     filename = os.path.basename(file_path)
 
+    # 获取文件 MIME 类型（须与 PUT 时 Content-Type 一致）
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    mime_types = {
+        "ogg": "audio/ogg",
+        "mp3": "audio/mpeg",
+        "mp4": "video/mp4",
+        "pdf": "application/pdf",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+    }
+    content_type = mime_types.get(ext, "application/octet-stream")
+
     # Step 1: 获取预签名 URL
     presign_data = {
         "filename": filename,
+        "contentType": content_type,
         "disposition": disposition,
         "path": path
     }
@@ -93,20 +108,6 @@ def upload_large_file(token, file_path, disposition="inline", path=""):
     # Step 2: 直传到 R2
     with open(file_path, "rb") as f:
         file_data = f.read()
-
-    # 获取文件 MIME 类型
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    mime_types = {
-        "ogg": "audio/ogg",
-        "mp3": "audio/mpeg",
-        "mp4": "video/mp4",
-        "pdf": "application/pdf",
-        "png": "image/png",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "gif": "image/gif",
-    }
-    content_type = mime_types.get(ext, "application/octet-stream")
 
     resp = requests.put(
         presigned_url,
