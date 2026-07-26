@@ -28,7 +28,7 @@ curl -X POST https://your-domain.com/api/v1/auth \
 ```bash
 curl -X POST https://your-domain.com/api/v1/upload \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "file=@report.pdf" \
+  -F "files=@report.pdf" \
   -F "path=documents/2024/Q3"
 ```
 
@@ -75,7 +75,7 @@ curl -X POST https://your-domain.com/api/v1/upload \
 ```bash
 curl -X POST https://your-domain.com/api/v1/upload \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "file=@report.pdf" \
+  -F "files=@report.pdf" \
   -F "path=/v/report.pdf"
 ```
 
@@ -151,7 +151,7 @@ token = auth_resp.json()["token"]
 headers = {"Authorization": f"Bearer {token}"}
 
 with open("report.pdf", "rb") as f:
-    files = {"file": ("report.pdf", f, "application/pdf")}
+    files = {"files": ("report.pdf", f, "application/pdf")}
     data = {"path": "documents/2024/Q3"}
     
     upload_resp = requests.post(
@@ -184,7 +184,7 @@ async function uploadFile(filePath, storagePath) {
 
   // 2. 上传文件
   const form = new FormData();
-  form.append('file', fs.createReadStream(filePath));
+  form.append('files', fs.createReadStream(filePath));
   form.append('path', storagePath);
 
   const uploadResp = await axios.post(`${API_URL}/api/v1/upload`, form, {
