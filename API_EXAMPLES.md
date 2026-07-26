@@ -28,7 +28,7 @@ curl -X POST https://your-domain.com/api/v1/auth \
 ```bash
 curl -X POST https://your-domain.com/api/v1/upload \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "file=@report.pdf" \
+  -F "files=@report.pdf" \
   -F "path=documents/2024/Q3"
 ```
 
@@ -75,7 +75,7 @@ curl -X POST https://your-domain.com/api/v1/upload \
 ```bash
 curl -X POST https://your-domain.com/api/v1/upload \
   -H "Authorization: Bearer YOUR_TOKEN" \
-  -F "file=@report.pdf" \
+  -F "files=@report.pdf" \
   -F "path=/v/report.pdf"
 ```
 
@@ -151,7 +151,7 @@ token = auth_resp.json()["token"]
 headers = {"Authorization": f"Bearer {token}"}
 
 with open("report.pdf", "rb") as f:
-    files = {"file": ("report.pdf", f, "application/pdf")}
+    files = {"files": ("report.pdf", f, "application/pdf")}
     data = {"path": "documents/2024/Q3"}
     
     upload_resp = requests.post(
@@ -184,7 +184,7 @@ async function uploadFile(filePath, storagePath) {
 
   // 2. 上传文件
   const form = new FormData();
-  form.append('file', fs.createReadStream(filePath));
+  form.append('files', fs.createReadStream(filePath));
   form.append('path', storagePath);
 
   const uploadResp = await axios.post(`${API_URL}/api/v1/upload`, form, {
@@ -262,23 +262,21 @@ curl -X POST https://your-domain.com/api/r2/presign \
 
 ## 完整示例脚本（PowerShell - 大文件）
 
+> 注意：PowerShell 会拆坏 `curl.exe -d '{"..."}'` 里的 JSON，导致服务端 400。下面用 `Invoke-RestMethod`；若坚持用 curl，加 `--%` 停止 PowerShell 解析参数。
+
 ```powershell
-$token = "YOUR_TOKEN"
+$body = '{"filename":"credits.ogg","disposition":"inline","path":"/v/credits.ogg"}'
 
 # Step 1: 获取预签名 URL
-$presignResponse = curl.exe -s -X POST "https://your-domain.com/api/r2/presign" `
-    -H "Authorization: Bearer $token" `
-    -H "Content-Type: application/json" `
-    -d '{"filename":"credits.ogg","disposition":"inline","path":"/v/credits.ogg"}'
+$presign = Invoke-RestMethod -Uri "https://your-domain.com/api/r2/presign" `
+    -Method POST -ContentType "application/json" -Body $body
 
-$presignData = $presignResponse | ConvertFrom-Json
-
-# Step 2: 上传文件（支持任意路径）
-curl.exe -X PUT $presignData.presignedUrl `
+# Step 2: 直传 R2（--data-binary 路径按实际文件改）
+curl.exe -X PUT $presign.presignedUrl `
     -H "Content-Type: audio/ogg" `
     --data-binary "@D:\Downloads\minecraft\sounds\credits.ogg"
 
-Write-Host "下载链接: https://your-domain.com$($presignData.downloadUrl)"
+Write-Host "下载链接: https://your-domain.com$($presign.downloadUrl)"
 ```
 
 ---
