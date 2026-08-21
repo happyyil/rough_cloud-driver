@@ -8,3 +8,5 @@ test.py
 .login_attempts.json
 __pycache__/
 _dream_query*.py
+agent-resume.txt
+QWEN.md

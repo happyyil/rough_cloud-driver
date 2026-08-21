@@ -21,8 +21,69 @@ curl -X POST https://your-domain.com/api/v1/auth \
 }
 ```
 
-后续请求在 Header 携带：`Authorization: Bearer YOUR_TOKEN`  
+后续请求在 Header 携带：`Authorization: Bearer YOUR_TOKEN`
 （`/api/v1/upload` 与 `/api/r2/presign` 都需要。）
+
+---
+
+## URL 重定向（短链接功能）
+
+上传 URL 类型，实现短链接/重定向功能。访问 `/v/<name>` 时自动跳转到目标 URL。
+
+### 方式一：JSON base64
+
+```bash
+# 将 URL 进行 base64 编码
+URL_B64=$(echo -n "https://www.example.com" | base64)
+
+curl -X POST https://your-domain.com/api/v1/upload \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"filename\":\"mylink.txt\",\"content\":\"$URL_B64\",\"type\":\"url\",\"path\":\"/v/mylink\"}"
+```
+
+响应：
+```json
+{
+  "success": true,
+  "data": {
+    "files": [
+      {
+        "original_name": "mylink.txt",
+        "stored_name": "mylink",
+        "download_url": "/v/mylink",
+        "storage": "url_mapping",
+        "path": "/v/mylink",
+        "type": "url"
+      }
+    ]
+  }
+}
+```
+
+### 方式二：multipart/form-data
+
+创建一个文本文件，内容为目标 URL：
+```bash
+echo -n "https://www.example.com" > url.txt
+
+curl -X POST https://your-domain.com/api/v1/upload \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -F "files=@url.txt" \
+  -F "type=url" \
+  -F "path=/v/mylink"
+```
+
+### 访问短链接
+
+上传成功后，访问 `https://your-domain.com/v/mylink` 会自动重定向到 `https://www.example.com`。
+
+### 注意事项
+
+1. **必须使用固定路径**：URL 类型只能使用 `/v/` 开头的固定路径
+2. **URL 验证**：上传时会验证 URL 是否可访问（HTTP 200），验证失败会拒绝上传
+3. **无扩展名**：下载链接没有文件扩展名，直接是 `/v/<name>`
+4. **优先级**：访问 `/v/<name>` 时，优先检查 URL 映射，如果没有才查找文件
 
 ---
 

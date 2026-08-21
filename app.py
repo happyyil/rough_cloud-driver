@@ -32,6 +32,9 @@ R2_PUBLIC_URL = os.getenv('R2_PUBLIC_URL')
 # 大小文件分界线：4.5MB
 LARGE_FILE_THRESHOLD = 4.5 * 1024 * 1024
 
+# URL 映射存储路径前缀
+URL_MAPPINGS_PREFIX = '.url_mappings/'
+
 # 创建 S3 客户端（R2 兼容 S3 API）
 s3_client = None
 if all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_KEY]):
@@ -239,6 +242,51 @@ def get_r2_url(key):
     if R2_PUBLIC_URL:
         return f'{R2_PUBLIC_URL}/{key}'
     return f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{R2_BUCKET_NAME}/{key}'
+
+# ========== URL 映射操作 ==========
+
+def save_url_mapping(name, target_url):
+    """保存 URL 映射到 R2"""
+    if not s3_client:
+        raise Exception('R2 未配置')
+    
+    mapping_key = f'{URL_MAPPINGS_PREFIX}{name}.json'
+    mapping_data = json.dumps({
+        'url': target_url,
+        'created_at': time.time()
+    })
+    
+    s3_client.put_object(
+        Bucket=R2_BUCKET_NAME,
+        Key=mapping_key,
+        Body=mapping_data.encode(),
+        ContentType='application/json'
+    )
+
+def get_url_mapping(name):
+    """获取 URL 映射，返回目标 URL 或 None"""
+    if not s3_client:
+        return None
+    
+    mapping_key = f'{URL_MAPPINGS_PREFIX}{name}.json'
+    
+    try:
+        response = s3_client.get_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=mapping_key
+        )
+        data = json.loads(response['Body'].read().decode())
+        return data.get('url')
+    except Exception:
+        return None
+
+def validate_url(url):
+    """验证 URL 是否可访问"""
+    try:
+        resp = requests.get(url, timeout=10, allow_redirects=True)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 # ========== Vercel Blob 操作 ==========
 
@@ -670,11 +718,16 @@ def download_file(token):
 
 @app.route('/v/<filename>')
 def download_fixed_path(filename):
-    """固定路径下载：/v/{filename} 直接返回文件"""
+    """固定路径下载：/v/{filename} 直接返回文件或重定向到 URL"""
     # 安全检查：只允许字母、数字、下划线、连字符、点
     import re
     if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
         return '无效的文件名', 400
+
+    # 优先检查 URL 映射
+    target_url = get_url_mapping(filename)
+    if target_url:
+        return redirect(target_url)
 
     storage_path = f'/v/{filename}'
     r2_key = f'v/{filename}'  # R2 key 不以 / 开头
@@ -816,7 +869,49 @@ def api_v1_upload():
         content_b64 = data.get('content', '')
         content_type = data.get('content_type', 'application/octet-stream')
         custom_path = data.get('path', '').strip()
+        upload_type = data.get('type', 'file')  # 新增：type 参数，默认为 file
 
+        # URL 类型处理
+        if upload_type == 'url':
+            # URL 类型必须使用固定路径
+            if not custom_path or not custom_path.startswith('/v/'):
+                return jsonify({'success': False, 'error': 'URL 类型必须使用固定路径（/v/开头）'}), 400
+            
+            # 解码 URL
+            try:
+                target_url = base64.b64decode(content_b64).decode()
+            except Exception:
+                return jsonify({'success': False, 'error': 'content 不是有效的 base64 编码'}), 400
+            
+            # 验证 URL 可访问性
+            if not validate_url(target_url):
+                return jsonify({'success': False, 'error': 'URL 无法访问'}), 400
+            
+            # 提取名称（去掉 /v/ 前缀）
+            name = custom_path[3:]
+            
+            # 保存 URL 映射
+            try:
+                save_url_mapping(name, target_url)
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)}), 500
+            
+            # 返回无扩展名的下载链接
+            return jsonify({
+                'success': True,
+                'data': {
+                    'files': [{
+                        'original_name': filename,
+                        'stored_name': name,
+                        'download_url': f'/v/{name}',
+                        'storage': 'url_mapping',
+                        'path': custom_path,
+                        'type': 'url'
+                    }]
+                }
+            })
+
+        # 文件类型处理（原有逻辑）
         if not filename or not content_b64:
             return jsonify({'success': False, 'error': '缺少 filename 或 content'}), 400
 
@@ -905,6 +1000,47 @@ def api_v1_upload():
     custom_path = request.form.get('path', '').strip()
     if custom_path and not is_path_safe(custom_path):
         return jsonify({'success': False, 'error': '无效的路径'}), 400
+    
+    # 获取 type 参数
+    upload_type = request.form.get('type', 'file')
+    
+    # URL 类型处理
+    if upload_type == 'url':
+        # URL 类型必须使用固定路径
+        if not custom_path or not custom_path.startswith('/v/'):
+            return jsonify({'success': False, 'error': 'URL 类型必须使用固定路径（/v/开头）'}), 400
+        
+        # 读取文件内容作为 URL
+        file = files[0]
+        target_url = file.read().decode().strip()
+        
+        # 验证 URL 可访问性
+        if not validate_url(target_url):
+            return jsonify({'success': False, 'error': 'URL 无法访问'}), 400
+        
+        # 提取名称（去掉 /v/ 前缀）
+        name = custom_path[3:]
+        
+        # 保存 URL 映射
+        try:
+            save_url_mapping(name, target_url)
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        
+        # 返回无扩展名的下载链接
+        return jsonify({
+            'success': True,
+            'data': {
+                'files': [{
+                    'original_name': file.filename,
+                    'stored_name': name,
+                    'download_url': f'/v/{name}',
+                    'storage': 'url_mapping',
+                    'path': custom_path,
+                    'type': 'url'
+                }]
+            }
+        })
 
     uploaded = []
     errors = []

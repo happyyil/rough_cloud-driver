@@ -125,6 +125,47 @@ def upload_large_file(token, file_path, disposition="inline", path=""):
         return {"success": False, "error": f"上传失败: {resp.status_code}"}
 
 
+def upload_url_redirect(token, target_url, name):
+    """
+    上传 URL 重定向（短链接功能）
+    
+    参数：
+        token: API Token
+        target_url: 目标 URL（如 https://www.example.com）
+        name: 短链接名称（如 "mylink"，访问路径为 /v/mylink）
+    
+    返回：
+        访问 https://your-app.vercel.app/v/{name} 会重定向到 target_url
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # 将 URL 进行 base64 编码
+    url_b64 = base64.b64encode(target_url.encode()).decode()
+    
+    data = {
+        "filename": f"{name}.txt",  # 文件名（仅用于标识）
+        "content": url_b64,
+        "type": "url",  # 指定类型为 URL
+        "path": f"/v/{name}"  # 固定路径
+    }
+    
+    resp = requests.post(
+        f"{API_BASE}/api/v1/upload",
+        headers=headers,
+        json=data
+    )
+    
+    result = resp.json()
+    if result.get("success"):
+        return {
+            "success": True,
+            "short_url": f"{API_BASE}/v/{name}",
+            "target_url": target_url
+        }
+    else:
+        return result
+
+
 if __name__ == "__main__":
     # 1. 获取 Token
     token = get_token(PIN_CODE)
@@ -152,10 +193,24 @@ if __name__ == "__main__":
     result = upload_large_file(token, test_file, path="/v/example.txt")
     print(result)
 
-    # 6. 清理
+    # 6. 方式四：URL 重定向（短链接）
+    print("\n=== URL 重定向（短链接） ===")
+    result = upload_url_redirect(
+        token,
+        target_url="https://www.example.com",
+        name="mylink"
+    )
+    if result.get("success"):
+        print(f"短链接: {result['short_url']}")
+        print(f"目标 URL: {result['target_url']}")
+        print(f"访问 {result['short_url']} 会自动跳转到 {result['target_url']}")
+    else:
+        print(f"上传失败: {result.get('error')}")
+
+    # 7. 清理
     os.remove(test_file)
 
-    # 7. 使用示例：上传任意路径的大文件
+    # 8. 使用示例：上传任意路径的大文件
     print("\n=== 使用示例 ===")
     print("""
 # 上传任意路径的大文件：
@@ -166,4 +221,12 @@ result = upload_large_file(
     path="/v/credits.ogg"
 )
 print(f"下载链接: {result['full_url']}")
+
+# 创建短链接：
+result = upload_url_redirect(
+    token,
+    target_url="https://github.com/yourusername/yourrepo",
+    name="repo"
+)
+print(f"短链接: {result['short_url']}")
 """)
