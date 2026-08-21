@@ -1,9 +1,9 @@
 import os
 import json
-import hashlib
-import hmac
+import secrets
 import time
 import base64
+import hashlib
 import boto3
 import requests
 from botocore.config import Config
@@ -11,7 +11,7 @@ from flask import Flask, request, render_template, Response, session, redirect, 
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', os.urandom(32).hex())
+app.secret_key = os.getenv('SECRET_KEY', 'default-secret-key-for-session')
 
 # Token 配置
 TOKEN_EXPIRE_HOURS = 24  # Token 有效期
@@ -50,6 +50,9 @@ if all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_KEY]):
 MAX_ATTEMPTS = 5
 LOCKOUT_TIME = 300
 LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.login_attempts.json')
+
+# Token 存储 - 文件持久化存储
+TOKENS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.tokens.json')
 
 # ========== 下载链接编码 ==========
 
@@ -137,54 +140,66 @@ def check_pin(pin):
     pin_hash = hashlib.sha256(pin.encode()).hexdigest()
     return pin_hash == PIN_HASH
 
-def _sign_token(user_id, expire_hours):
-    """生成 HMAC 签名 Token"""
-    expire_time = int(time.time()) + int(expire_hours * 3600)
-    payload = f'{user_id}:{expire_time}'
-    signature = hmac.new(
-        app.secret_key.encode(),
-        payload.encode(),
-        hashlib.sha256
-    ).hexdigest()
-    token_data = f'{payload}:{signature}'
-    return base64.urlsafe_b64encode(token_data.encode()).decode().rstrip('=')
+# ========== Token 管理（随机 Token + 文件存储） ==========
+
+def load_tokens():
+    """从文件加载 Token 存储"""
+    try:
+        if os.path.exists(TOKENS_FILE):
+            with open(TOKENS_FILE, 'r') as f:
+                data = json.load(f)
+                # 清理过期 Token
+                current_time = time.time()
+                return {k: v for k, v in data.items()
+                        if v.get('expire', 0) > current_time}
+    except (json.JSONDecodeError, IOError):
+        pass
+    return {}
+
+def save_tokens(tokens):
+    """保存 Token 存储到文件"""
+    try:
+        with open(TOKENS_FILE, 'w') as f:
+            json.dump(tokens, f)
+    except IOError:
+        pass
+
+def generate_token(user_type, expire_hours):
+    """生成随机 Token"""
+    token = secrets.token_urlsafe(32)  # 43 个随机字符
+    tokens = load_tokens()
+    tokens[token] = {
+        'user_type': user_type,
+        'expire': time.time() + expire_hours * 3600
+    }
+    save_tokens(tokens)
+    return token
+
+def verify_token(token, allowed_types=('api_user',)):
+    """验证 Token"""
+    tokens = load_tokens()
+    if token not in tokens:
+        return False
+    token_data = tokens[token]
+    # 检查类型
+    if token_data.get('user_type') not in allowed_types:
+        return False
+    # 检查过期
+    if token_data.get('expire', 0) < time.time():
+        return False
+    return True
 
 def generate_api_token(pin):
-    """生成 API Token（HMAC 签名，含过期时间）"""
-    return _sign_token('api_user', TOKEN_EXPIRE_HOURS)
+    """生成 API Token（随机 Token，24 小时有效）"""
+    return generate_token('api_user', TOKEN_EXPIRE_HOURS)
 
 def generate_web_presign_token():
-    """网页端大文件上传用的短期 Token（仅可用于 /api/r2/presign）"""
-    return _sign_token('presign_web', 1)
+    """网页端大文件上传用的短期 Token（1 小时有效）"""
+    return generate_token('presign_web', 1)
 
 def verify_api_token(token, allowed_users=('api_user',)):
-    """验证 Token，返回 True/False。allowed_users 限制可用的 user_id。"""
-    try:
-        # 补全 base64 padding
-        padding = 4 - len(token) % 4
-        if padding != 4:
-            token += '=' * padding
-        token_data = base64.urlsafe_b64decode(token.encode()).decode()
-        parts = token_data.rsplit(':', 2)
-        if len(parts) != 3:
-            return False
-        user_id, expire_time_str, signature = parts
-        if user_id not in allowed_users:
-            return False
-        expire_time = int(expire_time_str)
-        # 检查过期
-        if time.time() > expire_time:
-            return False
-        # 验证签名
-        payload = f'{user_id}:{expire_time_str}'
-        expected_sig = hmac.new(
-            app.secret_key.encode(),
-            payload.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(signature, expected_sig)
-    except Exception:
-        return False
+    """验证 API Token（兼容旧接口）"""
+    return verify_token(token, allowed_users)
 
 def _extract_bearer_token():
     auth_header = request.headers.get('Authorization', '')

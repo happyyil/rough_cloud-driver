@@ -6,6 +6,7 @@ comd.txt
 test.py
 .mimocode
 .login_attempts.json
+.tokens.json
 __pycache__/
 _dream_query*.py
 agent-resume.txt
