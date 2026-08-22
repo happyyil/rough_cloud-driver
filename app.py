@@ -765,19 +765,34 @@ def download_fixed_path(filename):
         try:
             url = get_r2_url(r2_key)
             print(f"DEBUG: 尝试从R2获取文件: {r2_key}, URL: {url}")
+            
             # 请求R2URL返回文件流，避免代理整个文件
-            resp_get = requests.get(url, timeout=60, stream=True, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    })
-            if resp_get.status_code == 200:
+            range_header = request.headers.get('Range')
+            r2_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+            if range_header:
+                r2_headers['Range'] = range_header
+                print(f"DEBUG: 透传 Range 头到 R2: {range_header}")
+            resp_get = requests.get(url, timeout=60, stream=True, headers=r2_headers)
+            
+            # 兼容处理 200，206
+            if resp_get.status_code in (200, 206):
                 response = Response(
                     resp_get.iter_content(chunk_size=8192),
-                    content_type=resp_get.headers.get('Content-Type', 'application/octet-stream')
-                )
+                    status=resp_get.status_code,
+                    content_type=resp_get.headers.get('Content-Type', 'application/octet-stream'))
+                for header_name in ['Content-Range', 'Accept-Ranges', 'Content-Length', 
+                                'ETag', 'Last-Modified', 'Cache-Control']:
+                    if header_name in resp_get.headers:
+                        response.headers[header_name] = resp_get.headers[header_name]
                 response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                if 'Content-Range' in resp_get.headers:
+                    print(f"DEBUG: R2 返回 Content-Range: {resp_get.headers['Content-Range']}")
                 return response
             else:
-                print(f"DEBUG: r2_get 状态码：{resp_get.status_code}")
+                print(f"DEBUG: R2 返回状态码: {resp_get.status_code}")
+            
         except Exception as e:
             print(f"DEBUG: 从R2获取文件失败: {e}")
 
