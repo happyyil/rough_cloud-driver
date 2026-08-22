@@ -765,16 +765,33 @@ def download_fixed_path(filename):
         try:
             url = get_r2_url(r2_key)
             print(f"DEBUG: 尝试从R2获取文件: {r2_key}, URL: {url}")
-            resp = requests.get(url, timeout=10)  # 短超时测试连通性
-            print(f"DEBUG: R2响应状态码: {resp.status_code}")
+            resp = requests.head(url, timeout=10)  # HEAD请求检查文件存在性
+            print(f"DEBUG: R2 HEAD响应状态码: {resp.status_code}")
             if resp.status_code == 200:
-                # 直接重定向到R2 URL，避免代理大文件
-                return redirect(url)
+                # 使用R2预签名URL直接返回文件流，避免代理整个文件
+                resp_get = requests.get(url, timeout=60, stream=True)
+                if resp_get.status_code == 200:
+                    response = Response(
+                        resp_get.iter_content(chunk_size=8192),
+                        content_type=resp_get.headers.get('Content-Type', 'application/octet-stream')
+                    )
+                    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                    return response
             elif resp.status_code == 403 and R2_PUBLIC_URL:
-                # 如果403且有公共URL，直接重定向到公共URL
+                # 如果403且有公共URL，尝试使用公共URL
                 public_url = f'{R2_PUBLIC_URL}/{r2_key}'
-                print(f"DEBUG: 使用公共URL重定向: {public_url}")
-                return redirect(public_url)
+                print(f"DEBUG: 尝试使用公共URL: {public_url}")
+                resp_public = requests.head(public_url, timeout=10)
+                print(f"DEBUG: 公共URL HEAD响应状态码: {resp_public.status_code}")
+                if resp_public.status_code == 200:
+                    resp_get = requests.get(public_url, timeout=60, stream=True)
+                    if resp_get.status_code == 200:
+                        response = Response(
+                            resp_get.iter_content(chunk_size=8192),
+                            content_type=resp_get.headers.get('Content-Type', 'application/octet-stream')
+                        )
+                        response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                        return response
         except Exception as e:
             print(f"DEBUG: 从R2获取文件失败: {e}")
             pass
@@ -787,10 +804,17 @@ def download_fixed_path(filename):
         for blob in blob_files:
             print(f"DEBUG: Blob文件列表项: {blob.get('pathname')}")
             if blob.get('pathname') == storage_path:
-                # 直接重定向到Blob URL，避免代理大文件
+                # 流式返回Blob文件，避免一次性加载整个文件到内存
                 blob_url = blob.get('url', '')
-                print(f"DEBUG: 使用Blob URL重定向: {blob_url}")
-                return redirect(blob_url)
+                print(f"DEBUG: 使用Blob URL流式获取: {blob_url}")
+                resp = requests.get(blob_url, timeout=60, stream=True)
+                if resp.status_code == 200:
+                    response = Response(
+                        resp.iter_content(chunk_size=8192),
+                        content_type=resp.headers.get('Content-Type', 'application/octet-stream')
+                    )
+                    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                    return response
 
     print(f"DEBUG: 文件不存在 - filename: {filename}, r2_key: {r2_key}")
     return '文件不存在', 404
