@@ -769,7 +769,9 @@ def download_fixed_path(filename):
             print(f"DEBUG: R2 HEAD响应状态码: {resp.status_code}")
             if resp.status_code == 200:
                 # 使用R2预签名URL直接返回文件流，避免代理整个文件
-                resp_get = requests.get(url, timeout=60, stream=True)
+                resp_get = requests.get(url, timeout=60, stream=True, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
                 if resp_get.status_code == 200:
                     response = Response(
                         resp_get.iter_content(chunk_size=8192),
@@ -777,24 +779,8 @@ def download_fixed_path(filename):
                     )
                     response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
                     return response
-            elif resp.status_code == 403 and R2_PUBLIC_URL:
-                # 如果403且有公共URL，尝试使用公共URL
-                public_url = f'{R2_PUBLIC_URL}/{r2_key}'
-                print(f"DEBUG: 尝试使用公共URL: {public_url}")
-                resp_public = requests.head(public_url, timeout=10)
-                print(f"DEBUG: 公共URL HEAD响应状态码: {resp_public.status_code}")
-                if resp_public.status_code == 200:
-                    resp_get = requests.get(public_url, timeout=60, stream=True)
-                    if resp_get.status_code == 200:
-                        response = Response(
-                            resp_get.iter_content(chunk_size=8192),
-                            content_type=resp_get.headers.get('Content-Type', 'application/octet-stream')
-                        )
-                        response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-                        return response
         except Exception as e:
             print(f"DEBUG: 从R2获取文件失败: {e}")
-            pass
 
     # 如果 R2 没有，再尝试从 Vercel Blob 获取
     if BLOB_READ_WRITE_TOKEN:
