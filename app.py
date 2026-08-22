@@ -1190,5 +1190,50 @@ def api_v1_upload():
         }
     })
 
+@app.route('/debug/test-r2')
+def debug_test_r2():
+    import requests
+    import urllib.request
+    
+    results = {}
+    
+    # 方式1：requests 默认
+    try:
+        r = requests.get("https://cdn.he-ying.top/v/cywh.mp4", timeout=10)
+        results['requests_default'] = r.status_code
+    except Exception as e:
+        results['requests_default'] = str(e)
+    
+    # 方式2：requests + 浏览器 UA
+    try:
+        r = requests.get(
+            "https://cdn.he-ying.top/v/cywh.mp4",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        results['requests_ua'] = r.status_code
+    except Exception as e:
+        results['requests_ua'] = str(e)
+    
+    # 方式3：urllib
+    try:
+        req = urllib.request.Request(
+            "https://cdn.he-ying.top/v/cywh.mp4",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            results['urllib'] = resp.status
+    except Exception as e:
+        results['urllib'] = str(e)
+    
+    # 方式4：直接访问 credits.ogg 对比
+    try:
+        r = requests.get("https://cdn.he-ying.top/v/credits.ogg", timeout=10)
+        results['requests_ogg'] = r.status_code
+    except Exception as e:
+        results['requests_ogg'] = str(e)
+    
+    return jsonify(results)
+
 if __name__ == '__main__':
     app.run(debug=False, port=5000)
