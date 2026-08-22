@@ -765,22 +765,16 @@ def download_fixed_path(filename):
         try:
             url = get_r2_url(r2_key)
             print(f"DEBUG: 尝试从R2获取文件: {r2_key}, URL: {url}")
-            resp = requests.get(url, timeout=60)
+            resp = requests.get(url, timeout=10)  # 短超时测试连通性
             print(f"DEBUG: R2响应状态码: {resp.status_code}")
             if resp.status_code == 200:
-                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-                return response
+                # 直接重定向到R2 URL，避免代理大文件
+                return redirect(url)
             elif resp.status_code == 403 and R2_PUBLIC_URL:
-                # 如果403且有公共URL，尝试使用公共URL
+                # 如果403且有公共URL，直接重定向到公共URL
                 public_url = f'{R2_PUBLIC_URL}/{r2_key}'
-                print(f"DEBUG: 尝试使用公共URL: {public_url}")
-                resp = requests.get(public_url, timeout=60)
-                print(f"DEBUG: 公共URL响应状态码: {resp.status_code}")
-                if resp.status_code == 200:
-                    response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-                    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-                    return response
+                print(f"DEBUG: 使用公共URL重定向: {public_url}")
+                return redirect(public_url)
         except Exception as e:
             print(f"DEBUG: 从R2获取文件失败: {e}")
             pass
@@ -788,17 +782,17 @@ def download_fixed_path(filename):
     # 如果 R2 没有，再尝试从 Vercel Blob 获取
     if BLOB_READ_WRITE_TOKEN:
         storage_path = f'/v/{filename}'
-        print(f"DEBUG: 尝试从Blob获取文件: {storage_path}")  # 调试日志
+        print(f"DEBUG: 尝试从Blob获取文件: {storage_path}")
         blob_files = blob_list('/v/')
         for blob in blob_files:
-            print(f"DEBUG: Blob文件列表项: {blob.get('pathname')}")  # 调试日志
+            print(f"DEBUG: Blob文件列表项: {blob.get('pathname')}")
             if blob.get('pathname') == storage_path:
-                resp = requests.get(blob.get('url', ''), timeout=60)
-                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-                return response
+                # 直接重定向到Blob URL，避免代理大文件
+                blob_url = blob.get('url', '')
+                print(f"DEBUG: 使用Blob URL重定向: {blob_url}")
+                return redirect(blob_url)
 
-    print(f"DEBUG: 文件不存在 - filename: {filename}, r2_key: {r2_key}")  # 调试日志
+    print(f"DEBUG: 文件不存在 - filename: {filename}, r2_key: {r2_key}")
     return '文件不存在', 404
 
 @app.route('/api/disposition', methods=['POST'])
