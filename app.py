@@ -764,25 +764,31 @@ def download_fixed_path(filename):
     if s3_client:
         try:
             url = get_r2_url(r2_key)
+            print(f"DEBUG: 尝试从R2获取文件: {r2_key}, URL: {url}")  # 调试日志
             resp = requests.get(url, timeout=60)
+            print(f"DEBUG: R2响应状态码: {resp.status_code}")  # 调试日志
             if resp.status_code == 200:
                 response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
                 response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
                 return response
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: 从R2获取文件失败: {e}")  # 调试日志
             pass
 
     # 如果 R2 没有，再尝试从 Vercel Blob 获取
     if BLOB_READ_WRITE_TOKEN:
         storage_path = f'/v/{filename}'
+        print(f"DEBUG: 尝试从Blob获取文件: {storage_path}")  # 调试日志
         blob_files = blob_list('/v/')
         for blob in blob_files:
+            print(f"DEBUG: Blob文件列表项: {blob.get('pathname')}")  # 调试日志
             if blob.get('pathname') == storage_path:
                 resp = requests.get(blob.get('url', ''), timeout=60)
                 response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
                 response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
                 return response
 
+    print(f"DEBUG: 文件不存在 - filename: {filename}, r2_key: {r2_key}")  # 调试日志
     return '文件不存在', 404
 
 @app.route('/api/disposition', methods=['POST'])
