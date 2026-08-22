@@ -752,25 +752,15 @@ def download_fixed_path(filename):
     if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
         return '无效的文件名', 400
 
-    # 优先检查 URL 映射
+    # 优先检查 URL 映射（URL重定向功能）
     target_url = get_url_mapping(filename)
     if target_url:
         return redirect(target_url)
 
-    storage_path = f'/v/{filename}'
-    r2_key = f'v/{filename}'  # R2 key 不以 / 开头
+    # R2 key 不以 / 开头，直接使用 filename
+    r2_key = f'v/{filename}'
 
-    # 尝试从 Vercel Blob 获取
-    if BLOB_READ_WRITE_TOKEN:
-        blob_files = blob_list('/v/')
-        for blob in blob_files:
-            if blob.get('pathname') == storage_path:
-                resp = requests.get(blob.get('url', ''), timeout=60)
-                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-                return response
-
-    # 尝试从 R2 获取
+    # 优先尝试从 R2 获取（因为 R2 key 是 v/{filename} 格式，与用户访问的 /v/{filename} 对应）
     if s3_client:
         try:
             url = get_r2_url(r2_key)
@@ -781,6 +771,17 @@ def download_fixed_path(filename):
                 return response
         except Exception:
             pass
+
+    # 如果 R2 没有，再尝试从 Vercel Blob 获取
+    if BLOB_READ_WRITE_TOKEN:
+        storage_path = f'/v/{filename}'
+        blob_files = blob_list('/v/')
+        for blob in blob_files:
+            if blob.get('pathname') == storage_path:
+                resp = requests.get(blob.get('url', ''), timeout=60)
+                response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
+                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                return response
 
     return '文件不存在', 404
 
