@@ -51,8 +51,8 @@ MAX_ATTEMPTS = 5
 LOCKOUT_TIME = 300
 LOGIN_ATTEMPTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.login_attempts.json')
 
-# Token 存储 - 文件持久化存储
-TOKENS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.tokens.json')
+# Token 存储 - R2 存储
+TOKENS_KEY = '.tokens/tokens.json'
 
 # ========== 下载链接编码 ==========
 
@@ -143,26 +143,35 @@ def check_pin(pin):
 # ========== Token 管理（随机 Token + 文件存储） ==========
 
 def load_tokens():
-    """从文件加载 Token 存储"""
+    """从 R2 加载 Token 存储"""
+    if not s3_client:
+        return {}
     try:
-        if os.path.exists(TOKENS_FILE):
-            with open(TOKENS_FILE, 'r') as f:
-                data = json.load(f)
-                # 清理过期 Token
-                current_time = time.time()
-                return {k: v for k, v in data.items()
-                        if v.get('expire', 0) > current_time}
-    except (json.JSONDecodeError, IOError):
-        pass
-    return {}
+        response = s3_client.get_object(Bucket=R2_BUCKET_NAME, Key=TOKENS_KEY)
+        data = json.loads(response['Body'].read().decode('utf-8'))
+        # 清理过期 Token
+        current_time = time.time()
+        return {k: v for k, v in data.items()
+                if v.get('expire', 0) > current_time}
+    except s3_client.exceptions.NoSuchKey:
+        return {}
+    except Exception as e:
+        print(f"加载 Token 失败: {e}")
+        return {}
 
 def save_tokens(tokens):
-    """保存 Token 存储到文件"""
+    """保存 Token 存储到 R2"""
+    if not s3_client:
+        return
     try:
-        with open(TOKENS_FILE, 'w') as f:
-            json.dump(tokens, f)
-    except IOError:
-        pass
+        s3_client.put_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=TOKENS_KEY,
+            Body=json.dumps(tokens).encode('utf-8'),
+            ContentType='application/json'
+        )
+    except Exception as e:
+        print(f"保存 Token 失败: {e}")
 
 def generate_token(user_type, expire_hours):
     """生成随机 Token"""
