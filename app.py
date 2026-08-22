@@ -765,20 +765,19 @@ def download_fixed_path(filename):
         try:
             url = get_r2_url(r2_key)
             print(f"DEBUG: 尝试从R2获取文件: {r2_key}, URL: {url}")
-            resp = requests.head(url, timeout=10)  # HEAD请求检查文件存在性
-            print(f"DEBUG: R2 HEAD响应状态码: {resp.status_code}")
-            if resp.status_code == 200:
-                # 使用R2预签名URL直接返回文件流，避免代理整个文件
-                resp_get = requests.get(url, timeout=60, stream=True, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-                if resp_get.status_code == 200:
-                    response = Response(
-                        resp_get.iter_content(chunk_size=8192),
-                        content_type=resp_get.headers.get('Content-Type', 'application/octet-stream')
-                    )
-                    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-                    return response
+            # 请求R2URL返回文件流，避免代理整个文件
+            resp_get = requests.get(url, timeout=60, stream=True, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    })
+            if resp_get.status_code == 200:
+                response = Response(
+                    resp_get.iter_content(chunk_size=8192),
+                    content_type=resp_get.headers.get('Content-Type', 'application/octet-stream')
+                )
+                response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+                return response
+            else:
+                print(f"DEBUG: r2_get 状态码：{resp_get.status_code}")
         except Exception as e:
             print(f"DEBUG: 从R2获取文件失败: {e}")
 
@@ -1176,50 +1175,6 @@ def api_v1_upload():
         }
     })
 
-@app.route('/debug/test-r2')
-def debug_test_r2():
-    import requests
-    import urllib.request
-    
-    results = {}
-    
-    # 方式1：requests 默认
-    try:
-        r = requests.get("https://cdn.he-ying.top/v/cywh.mp4", timeout=10)
-        results['requests_default'] = r.status_code
-    except Exception as e:
-        results['requests_default'] = str(e)
-    
-    # 方式2：requests + 浏览器 UA
-    try:
-        r = requests.get(
-            "https://cdn.he-ying.top/v/cywh.mp4",
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        )
-        results['requests_ua'] = r.status_code
-    except Exception as e:
-        results['requests_ua'] = str(e)
-    
-    # 方式3：urllib
-    try:
-        req = urllib.request.Request(
-            "https://cdn.he-ying.top/v/cywh.mp4",
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            results['urllib'] = resp.status
-    except Exception as e:
-        results['urllib'] = str(e)
-    
-    # 方式4：直接访问 credits.ogg 对比
-    try:
-        r = requests.get("https://cdn.he-ying.top/v/credits.ogg", timeout=10)
-        results['requests_ogg'] = r.status_code
-    except Exception as e:
-        results['requests_ogg'] = str(e)
-    
-    return jsonify(results)
 
 if __name__ == '__main__':
     app.run(debug=False, port=5000)
