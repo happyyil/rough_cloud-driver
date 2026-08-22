@@ -143,7 +143,7 @@ def check_pin(pin):
 # ========== Token 管理（随机 Token + 文件存储） ==========
 
 def load_tokens():
-    """从 R2 加载 Token 存储"""
+    """从 R2 加载 Token 存储，并清理过期 Token"""
     if not s3_client:
         return {}
     try:
@@ -151,8 +151,12 @@ def load_tokens():
         data = json.loads(response['Body'].read().decode('utf-8'))
         # 清理过期 Token
         current_time = time.time()
-        return {k: v for k, v in data.items()
-                if v.get('expire', 0) > current_time}
+        cleaned = {k: v for k, v in data.items()
+                   if v.get('expire', 0) > current_time}
+        # 如果有过期 Token 被清理，保存更新
+        if len(cleaned) != len(data):
+            save_tokens(cleaned)
+        return cleaned
     except s3_client.exceptions.NoSuchKey:
         return {}
     except Exception as e:
