@@ -81,6 +81,11 @@ def decode_download_token(token):
     except Exception:
         return None
 
+def download_url_for_token(token, storage):
+    """按存储后端为下载链接选择对应路由。"""
+    prefix = '/r2/d' if storage == 'r2' else '/d'
+    return f'{prefix}/{token}'
+
 def make_stored_filename(original_name, timestamp=None):
     """生成包含可恢复原始文件名的唯一存储名。"""
     timestamp = timestamp or str(int(time.time()))
@@ -450,7 +455,7 @@ def get_presigned_url():
             download_url = f'/v/{fixed_filename}'
         else:
             token = encode_download_token(filename, unique_name, 'r2', disposition, custom_path)
-            download_url = f'/d/{token}'
+            download_url = download_url_for_token(token, 'r2')
 
         return jsonify({
             'presignedUrl': presigned_url,
@@ -547,9 +552,9 @@ def upload_files():
                 # 固定路径：下载链接直接是 /v/{filename}
                 download_url = f'/v/{fixed_filename}'
             else:
-                # 普通路径：下载链接是 /d/{token}
+                # 下载路径根据存储后端选择 Flask 或 Cloudflare Worker
                 token = encode_download_token(original_filename, filename, storage, disposition, custom_path)
-                download_url = f'/d/{token}'
+                download_url = download_url_for_token(token, storage)
 
             uploaded.append({'name': original_filename, 'download_url': download_url, 'storage': storage, 'path': custom_path})
         except Exception as e:
@@ -684,6 +689,7 @@ def teacher():
                 'uploaded_at': blob.get('uploadedAt', ''),
                 'storage': 'blob',
                 'token': token,
+                'download_url': download_url_for_token(token, 'blob'),
                 'disposition': 'inline',
                 'path': path
             })
@@ -721,13 +727,15 @@ def teacher():
                         path, filename = '', key
                     
                     original_name = original_filename_from_stored_name(filename)
+                    token = encode_download_token(original_name, filename, 'r2', 'inline', path)
                     files.append({
                         'name': original_name,
                         'url': get_r2_url(key),
                         'size': obj['Size'],
                         'uploaded_at': obj['LastModified'].isoformat(),
                         'storage': 'r2',
-                        'token': encode_download_token(original_name, filename, 'r2', 'inline', path),
+                        'token': token,
+                        'download_url': download_url_for_token(token, 'r2'),
                         'disposition': 'inline',
                         'path': path
                     })
@@ -747,6 +755,7 @@ def logout():
     session.clear()
     return redirect(url_for('verify_pin'))
 
+@app.route('/r2/d/<token>')
 @app.route('/d/<token>')
 def download_file(token):
     result = decode_download_token(token)
@@ -895,7 +904,11 @@ def toggle_disposition():
     original_name, stored_name, storage, disposition, path = result
     new_disposition = 'attachment' if disposition == 'inline' else 'inline'
     new_token = encode_download_token(original_name, stored_name, storage, new_disposition, path)
-    return jsonify({'token': new_token, 'disposition': new_disposition})
+    return jsonify({
+        'token': new_token,
+        'disposition': new_disposition,
+        'download_url': download_url_for_token(new_token, storage)
+    })
 
 # ========== 程序化调用 API v1 ==========
 
@@ -1100,9 +1113,9 @@ def api_v1_upload():
                 # 固定路径：下载链接直接是 /v/{filename}
                 download_url = f'/v/{fixed_filename}'
             else:
-                # 普通路径：下载链接是 /d/{token}
+                # 下载路径根据存储后端选择 Flask 或 Cloudflare Worker
                 token = encode_download_token(filename, stored_name, storage, disposition, custom_path)
-                download_url = f'/d/{token}'
+                download_url = download_url_for_token(token, storage)
 
             return jsonify({
                 'success': True,
@@ -1230,9 +1243,9 @@ def api_v1_upload():
                 # 固定路径：下载链接直接是 /v/{filename}
                 download_url = f'/v/{fixed_filename}'
             else:
-                # 普通路径：下载链接是 /d/{token}
+                # 下载路径根据存储后端选择 Flask 或 Cloudflare Worker
                 token = encode_download_token(original_filename, stored_name, storage, disposition, custom_path)
-                download_url = f'/d/{token}'
+                download_url = download_url_for_token(token, storage)
 
             uploaded.append({
                 'original_name': original_filename,

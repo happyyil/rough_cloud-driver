@@ -36,6 +36,9 @@ upload_app/
 ├── app.py                    # 主应用文件（单文件架构，所有路由和逻辑）
 ├── requirements.txt          # Python 依赖
 ├── vercel.json              # Vercel 部署配置
+├── worker/                   # R2 文件下载 Worker（独立部署）
+│   ├── index.js
+│   └── wrangler.toml
 ├── .env.example             # 环境变量示例
 ├── API_EXAMPLES.md          # API 使用文档（详细示例）
 ├── QWEN.md                  # 开发经验与教训总结
@@ -94,6 +97,9 @@ cp .env.example .env.local
 
 ### 一键部署
 项目已配置 `vercel.json`，直接推送代码到 Git 仓库，Vercel 会自动部署。
+
+### Cloudflare Worker（仅 R2 文件下载）
+`worker/` 中的 Worker 仅处理 `/r2/d/*`，通过 R2 bucket binding 直接读取 R2 文件；Blob 文件继续使用 Flask 的 `/d/*` 路由。部署前将 `worker/wrangler.toml` 中的 `REPLACE_WITH_R2_BUCKET_NAME` 替换为与 Vercel `R2_BUCKET_NAME` 相同的实际桶名，然后在已登录 Wrangler 的环境中运行 `npx wrangler deploy --config worker/wrangler.toml`。确保 `cloud.he-ying.top` 的 DNS 在 Cloudflare 代理状态，且此路由只指向该 Worker。旧的 R2 `/d/*` 链接继续由 Flask 兼容处理；后台和新上传生成的链接使用 `/r2/d/*`。
 
 ### 手动部署
 ```bash
@@ -189,10 +195,12 @@ curl -X POST https://your-domain.com/api/v1/upload \
 ### 路径规则
 | 路径格式 | 说明 | 下载链接 |
 |---------|------|---------|
-| `documents/2024/Q3` | 普通路径 | `/d/{token}` |
+| `documents/2024/Q3` | 普通路径（Blob） | `/d/{token}` |
+| `documents/2024/Q3` | 普通路径（R2） | `/r2/d/{token}` |
 | `/v/report.pdf` | 固定路径 | `/v/report.pdf` |
 | `/v/mylink` (type=url) | URL 重定向 | `/v/mylink` → 重定向 |
-| （空） | 默认 uploads/ | `/d/{token}` |
+| （空） | 默认 uploads/（Blob） | `/d/{token}` |
+| （空） | 默认 uploads/（R2） | `/r2/d/{token}` |
 
 **路径安全限制**：
 - 只允许字母、数字、下划线、连字符、斜杠、点
@@ -218,7 +226,7 @@ curl -X POST https://your-domain.com/api/v1/upload \
                            (预签名 URL 直传)
 ```
 
-非固定路径文件的存储名会包含可逆编码的原始文件名，后台据此显示上传名称；R2 下载由应用通过 S3 API 流式返回，响应中包含 UTF-8 文件名。历史对象没有保存原始名称的元数据时，后台只能显示原存储名。
+非固定路径文件的存储名会包含可逆编码的原始文件名，后台据此显示上传名称。普通 Blob 文件走 Flask `/d/*`，R2 文件走 Cloudflare Worker `/r2/d/*` 并从 R2 bucket binding 读取；两种下载响应都设置 UTF-8 文件名。历史对象没有保存原始名称的元数据时，后台只能显示原存储名。
 
 **为什么是 4.5MB？**
 Vercel Serverless Functions 请求体限制为 4.5MB，超过此限制的请求会被拒绝。

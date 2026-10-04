@@ -106,7 +106,7 @@ curl -X POST https://your-domain.com/api/v1/upload \
     "files": [
       {
         "original_name": "report.pdf",
-        "stored_name": "1234567890.pdf",
+        "stored_name": "timestamp--encoded-name.pdf",
         "download_url": "/d/xxx",
         "storage": "blob",
         "path": "documents/2024/Q3"
@@ -295,9 +295,9 @@ curl -X POST https://your-domain.com/api/r2/presign \
 # 响应：
 # {
 #   "presignedUrl": "https://xxx.r2.cloudflarestorage.com/...",
-#   "downloadUrl": "/d/xxx",
-#   "key": "videos/2024/1234567890.mp4",
-#   "filename": "1234567890.mp4"
+#   "downloadUrl": "/r2/d/xxx",
+#   "key": "videos/2024/...",
+#   "filename": "timestamp--encoded-name.mp4"
 # }
 
 # Step 2: 使用预签名 URL 直传（Content-Type 与上一步 contentType 一致）
@@ -305,6 +305,8 @@ curl -X PUT "PRESIGNED_URL" \
   -H "Content-Type: video/mp4" \
   --data-binary "@large_video.mp4"
 ```
+
+R2 下载由 `worker/` 中的 Cloudflare Worker 直接从绑定的 R2 bucket 返回；Blob 文件继续由 Flask `/d/<token>` 提供。部署 Worker 前请按 `AGENTS.md` 中的说明配置桶名并部署 `worker/wrangler.toml`。
 
 ### 固定路径
 

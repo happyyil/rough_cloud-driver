@@ -41,7 +41,7 @@
         {% for file in files %}
             <li>
                 <div class="file-info">
-                    <a href="{{ url_for('download_file', token=file.token) }}" target="_blank">
+                    <a href="{{ file.download_url }}" target="_blank">
                         {{ file.name }}
                     </a>
                     <div class="file-meta">
@@ -69,7 +69,7 @@
             const data = await res.json();
             if (data.token) {
                 btn.textContent = data.disposition === 'inline' ? '👁 预览' : '⬇ 下载';
-                btn.closest('li').querySelector('a').href = '/d/' + data.token;
+                btn.closest('li').querySelector('a').href = data.download_url;
             }
         }
     </script>

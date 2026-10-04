@@ -1,0 +1,12 @@
+name = "rough-cloud-driver-r2-download"
+main = "index.js"
+compatibility_date = "2026-10-04"
+workers_dev = false
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "REPLACE_WITH_R2_BUCKET_NAME"
+
+[[routes]]
+pattern = "cloud.he-ying.top/r2/d/*"
+zone_name = "he-ying.top"
