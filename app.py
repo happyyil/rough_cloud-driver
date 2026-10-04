@@ -1,9 +1,11 @@
 import os
 import json
+import binascii
 import secrets
 import time
 import base64
 import hashlib
+from urllib.parse import quote
 import boto3
 import requests
 from botocore.config import Config
@@ -78,6 +80,37 @@ def decode_download_token(token):
         return None
     except Exception:
         return None
+
+def make_stored_filename(original_name, timestamp=None):
+    """生成包含可恢复原始文件名的唯一存储名。"""
+    timestamp = timestamp or str(int(time.time()))
+    extension = original_name.rsplit('.', 1)[1].lower() if '.' in original_name else ''
+    encoded_name = base64.urlsafe_b64encode(original_name.encode('utf-8')).decode('ascii').rstrip('=')
+    suffix = f'.{extension}' if extension else ''
+    return f'{timestamp}--{encoded_name}{suffix}'
+
+def original_filename_from_stored_name(stored_name):
+    """从新格式存储名恢复原始文件名；旧格式回退为存储名。"""
+    try:
+        timestamp, encoded_name = stored_name.split('--', 1)
+        if not timestamp.isdigit():
+            return stored_name
+        if '.' in encoded_name:
+            encoded_name = encoded_name.rsplit('.', 1)[0]
+        if not encoded_name:
+            return stored_name
+        padding = '=' * (-len(encoded_name) % 4)
+        return base64.urlsafe_b64decode(encoded_name + padding).decode('utf-8')
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return stored_name
+
+def make_content_disposition(disposition, filename):
+    """构建兼容 ASCII 和 UTF-8 文件名的 Content-Disposition 响应头。"""
+    fallback_filename = secure_filename(filename) or 'download'
+    return (
+        f'{disposition}; filename="{fallback_filename}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
 
 def load_login_attempts():
     """从文件加载登录尝试记录"""
@@ -383,9 +416,8 @@ def get_presigned_url():
     if not filename or not allowed_file(filename):
         return jsonify({'error': '不支持的文件类型'}), 400
 
-    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
     timestamp = str(int(time.time()))
-    unique_name = f'{timestamp}.{ext}' if ext else timestamp
+    unique_name = make_stored_filename(filename, timestamp)
 
     # 获取自定义路径参数
     custom_path = data.get('path', '').strip()
@@ -469,7 +501,7 @@ def upload_files():
             continue
 
         timestamp = str(int(time.time()))
-        filename = f'{timestamp}.{ext}'
+        filename = make_stored_filename(original_filename, timestamp)
         file_data = file.read()
         content_type = file.content_type or 'application/octet-stream'
 
@@ -555,7 +587,7 @@ def index():
             return f'不支持的文件类型: .{ext}。允许: {", ".join(ALLOWED_EXTENSIONS)}'
         
         timestamp = str(int(time.time()))
-        filename = f'{timestamp}.{ext}'
+        filename = make_stored_filename(original_filename, timestamp)
         key = f'uploads/{filename}'
         
         if not s3_client:
@@ -643,9 +675,10 @@ def teacher():
             else:
                 path, filename = '', pathname
             
-            token = encode_download_token(filename, filename, 'blob', 'inline', path)
+            original_name = original_filename_from_stored_name(filename)
+            token = encode_download_token(original_name, filename, 'blob', 'inline', path)
             files.append({
-                'name': filename,
+                'name': original_name,
                 'url': blob.get('url'),
                 'size': blob.get('size', 0),
                 'uploaded_at': blob.get('uploadedAt', ''),
@@ -687,13 +720,14 @@ def teacher():
                     else:
                         path, filename = '', key
                     
+                    original_name = original_filename_from_stored_name(filename)
                     files.append({
-                        'name': filename,
+                        'name': original_name,
                         'url': get_r2_url(key),
                         'size': obj['Size'],
                         'uploaded_at': obj['LastModified'].isoformat(),
                         'storage': 'r2',
-                        'token': encode_download_token(filename, filename, 'r2', 'inline', path),
+                        'token': encode_download_token(original_name, filename, 'r2', 'inline', path),
                         'disposition': 'inline',
                         'path': path
                     })
@@ -734,15 +768,46 @@ def download_file(token):
             if blob.get('pathname') == storage_path:
                 resp = requests.get(blob.get('url', ''), timeout=60)
                 response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-                response.headers['Content-Disposition'] = f'{disposition}; filename="{original_name}"'
+                response.headers['Content-Disposition'] = make_content_disposition(disposition, original_name)
                 return response
         return '文件不存在', 404
-    else:
-        url = get_r2_url(storage_path)
-        resp = requests.get(url, timeout=60)
-        response = Response(resp.content, content_type=resp.headers.get('Content-Type', 'application/octet-stream'))
-        response.headers['Content-Disposition'] = f'{disposition}; filename="{original_name}"'
+    if storage == 'r2':
+        if not s3_client:
+            return 'R2 未配置', 500
+
+        try:
+            get_object_params = {'Bucket': R2_BUCKET_NAME, 'Key': storage_path}
+            range_header = request.headers.get('Range')
+            if range_header:
+                get_object_params['Range'] = range_header
+            obj = s3_client.get_object(**get_object_params)
+        except Exception as e:
+            error_code = getattr(e, 'response', {}).get('Error', {}).get('Code')
+            if error_code in ('NoSuchKey', '404', 'NotFound'):
+                return '文件不存在', 404
+            app.logger.exception('Failed to read R2 object %s', storage_path)
+            return '读取文件失败', 502
+
+        response = Response(
+            obj['Body'].iter_chunks(chunk_size=8192),
+            status=obj.get('ResponseMetadata', {}).get('HTTPStatusCode', 200),
+            content_type=obj.get('ContentType', 'application/octet-stream')
+        )
+        response.call_on_close(obj['Body'].close)
+        response.headers['Content-Disposition'] = make_content_disposition(disposition, original_name)
+        response.headers['Accept-Ranges'] = 'bytes'
+        for header_name, object_name in (
+            ('Content-Length', 'ContentLength'),
+            ('Content-Range', 'ContentRange'),
+            ('ETag', 'ETag'),
+            ('Last-Modified', 'LastModified')
+        ):
+            if object_name in obj:
+                value = obj[object_name]
+                response.headers[header_name] = value.strftime('%a, %d %b %Y %H:%M:%S GMT') if header_name == 'Last-Modified' else value
         return response
+
+    return '无效的存储类型', 400
 
 @app.route('/v/<filename>')
 def download_fixed_path(filename):
@@ -997,7 +1062,7 @@ def api_v1_upload():
             return jsonify({'success': False, 'error': 'content 不是有效的 base64 编码'}), 400
 
         timestamp = str(int(time.time()))
-        stored_name = f'{timestamp}.{ext}'
+        stored_name = make_stored_filename(filename, timestamp)
 
         # 检查是否是固定路径 (/v/{filename})
         is_fixed_path = custom_path and custom_path.startswith('/v/')
@@ -1123,7 +1188,7 @@ def api_v1_upload():
             continue
 
         timestamp = str(int(time.time()))
-        stored_name = f'{timestamp}.{ext}'
+        stored_name = make_stored_filename(original_filename, timestamp)
         file_data = file.read()
         content_type = file.content_type or 'application/octet-stream'
 
