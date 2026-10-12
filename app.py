@@ -18,7 +18,7 @@ app.secret_key = os.getenv('SECRET_KEY', 'default-secret-key-for-session')
 # Token 配置
 TOKEN_EXPIRE_HOURS = 24  # Token 有效期
 
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3', 'ogg'}
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'py', 'zip', 'mp4', 'mp3', 'ogg', 'html'}
 PIN_HASH = os.getenv('PIN_HASH')
 
 # Vercel Blob 配置（小文件存储）

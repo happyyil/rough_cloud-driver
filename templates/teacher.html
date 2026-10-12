@@ -49,7 +49,7 @@
                         {% if file.uploaded_at %} · {{ file.uploaded_at[:10] }} {{ file.uploaded_at[11:19] }}{% endif %}
                     </div>
                 </div>
-                <button class="toggle-btn" onclick="toggleDisposition(this, '{{ file.token }}')" title="切换预览/下载">
+                <button class="toggle-btn" data-token="{{ file.token }}" onclick="toggleDisposition(this)" title="切换预览/下载">
                     {{ '👁 预览' if file.disposition == 'inline' else '⬇ 下载' }}
                 </button>
             </li>
@@ -60,14 +60,15 @@
     
     <p><a href="{{ url_for('index') }}">← 返回上传页面</a></p>
     <script>
-        async function toggleDisposition(btn, token) {
+        async function toggleDisposition(btn) {
             const res = await fetch('/api/disposition', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ token: token })
+                body: JSON.stringify({ token: btn.dataset.token })
             });
             const data = await res.json();
             if (data.token) {
+                btn.dataset.token = data.token;
                 btn.textContent = data.disposition === 'inline' ? '👁 预览' : '⬇ 下载';
                 btn.closest('li').querySelector('a').href = '/d/' + data.token;
             }
