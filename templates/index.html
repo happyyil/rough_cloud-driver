@@ -2,10 +2,17 @@
 <html>
 <head>
     <title>文件上传系统</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; max-width: 600px; margin: 0 auto; }
-        input[type="file"] { margin: 20px 0; }
-        button { padding: 10px 20px; background: #007BFF; color: white; border: none; cursor: pointer; margin: 5px; }
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; text-align: center; padding: clamp(20px, 6vw, 50px) 16px; max-width: 632px; margin: 0 auto; }
+        .drop-zone { position: relative; margin: 20px 0; padding: 32px 16px; border: 2px dashed #9ca3af; border-radius: 12px; background: #f9fafb; color: #4b5563; cursor: pointer; transition: border-color .15s, background-color .15s; }
+        .drop-zone:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+        .drop-zone.is-dragover { border-color: #007BFF; background: #eff6ff; }
+        .drop-zone p { margin: 0 0 8px; }
+        .drop-zone small { color: #6b7280; }
+        .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+        button { padding: 10px 20px; background: #007BFF; color: white; border: none; border-radius: 6px; cursor: pointer; margin: 5px; }
         button:hover { background: #0056b3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
         #progress { width: 100%; height: 20px; margin: 20px 0; display: none; }
@@ -13,19 +20,33 @@
         .success { color: green; }
         .error { color: red; }
         .info { color: #666; }
-        #fileInfo { margin: 10px 0; color: #666; }
+        #fileInfo { margin: 10px 0; color: #666; overflow-wrap: anywhere; }
+        .disposition-options { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 16px; margin: 15px 0; font-size: 14px; color: #666; }
+        .disposition-options label { cursor: pointer; }
+        #uploadBtn { min-height: 44px; }
+        @media (max-width: 480px) {
+            body { padding-top: 24px; }
+            h1 { font-size: 1.7rem; }
+            .drop-zone { padding: 26px 12px; }
+            #uploadBtn { width: 100%; margin: 8px 0; }
+            #status { overflow-wrap: anywhere; }
+        }
     </style>
 </head>
 <body>
     <h1>文件上传</h1>
-    <p>请选择文件并上传</p>
+    <p>选择文件或将文件拖到下方</p>
     
     <form id="uploadForm" method="post" enctype="multipart/form-data">
-        <input type="file" id="fileInput" name="file" multiple required>
+        <div id="fileDropZone" class="drop-zone" role="button" tabindex="0" aria-label="选择或拖入要上传的文件">
+            <input type="file" id="fileInput" name="file" class="visually-hidden" multiple tabindex="-1" aria-hidden="true">
+            <p>拖入文件到这里</p>
+            <small>或点击此处选择文件（支持多选）</small>
+        </div>
         <div id="fileInfo"></div>
-        <div style="margin: 15px 0; font-size: 14px; color: #666;">
+        <div class="disposition-options">
             <label><input type="radio" name="disposition" value="inline" checked> 浏览器预览</label>
-            <label style="margin-left: 15px;"><input type="radio" name="disposition" value="attachment"> 直接下载</label>
+            <label><input type="radio" name="disposition" value="attachment"> 直接下载</label>
         </div>
         <button type="submit" id="uploadBtn">立即上传</button>
     </form>
@@ -41,12 +62,13 @@
 
         const uploadForm = document.getElementById('uploadForm');
         const fileInput = document.getElementById('fileInput');
+        const fileDropZone = document.getElementById('fileDropZone');
         const uploadBtn = document.getElementById('uploadBtn');
         const progress = document.getElementById('progress');
         const status = document.getElementById('status');
         const fileInfo = document.getElementById('fileInfo');
 
-        fileInput.addEventListener('change', () => {
+        function updateFileInfo() {
             const files = fileInput.files;
             if (files.length === 0) {
                 fileInfo.textContent = '';
@@ -60,6 +82,41 @@
                 const totalMB = (totalSize / 1024 / 1024).toFixed(2);
                 fileInfo.textContent = `已选择 ${files.length} 个文件，共 ${totalSize < 1024*1024 ? (totalSize/1024).toFixed(1)+' KB' : totalMB+' MB'}`;
             }
+        }
+
+        fileInput.addEventListener('change', updateFileInfo);
+        fileDropZone.addEventListener('click', (event) => {
+            if (event.target !== fileInput) fileInput.click();
+        });
+        fileDropZone.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                fileInput.click();
+            }
+        });
+
+        let dragDepth = 0;
+        fileDropZone.addEventListener('dragenter', (event) => {
+            event.preventDefault();
+            dragDepth++;
+            fileDropZone.classList.add('is-dragover');
+        });
+        fileDropZone.addEventListener('dragover', (event) => event.preventDefault());
+        fileDropZone.addEventListener('dragleave', (event) => {
+            event.preventDefault();
+            dragDepth = Math.max(0, dragDepth - 1);
+            if (dragDepth === 0) fileDropZone.classList.remove('is-dragover');
+        });
+        fileDropZone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            dragDepth = 0;
+            fileDropZone.classList.remove('is-dragover');
+            if (!event.dataTransfer.files.length) return;
+
+            const transfer = new DataTransfer();
+            Array.from(event.dataTransfer.files).forEach((file) => transfer.items.add(file));
+            fileInput.files = transfer.files;
+            updateFileInfo();
         });
 
         uploadForm.addEventListener('submit', async (e) => {
